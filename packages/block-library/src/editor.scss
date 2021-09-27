@@ -47,6 +47,7 @@
 @import "./query-pagination-numbers/editor.scss";
 @import "./post-featured-image/editor.scss";
 @import "./term-description/editor.scss";
+@import "./post-comment-avatar/editor.scss";
 
 :root .editor-styles-wrapper {
 	@include background-colors-deprecated();

@@ -1,0 +1,25 @@
+{
+	"apiVersion": 2,
+	"name": "core/post-comment-avatar",
+	"title": "Post Comment Avatar",
+	"category": "design",
+	"parent": [ "core/post-comment" ],
+	"description": "Post comment avatar.",
+	"textdomain": "default",
+	"usesContext": [ "commentId" ],
+	"supports": {
+		"html": true,
+		"__experimentalBorder": {
+			"radius": true
+		}
+	},
+	"attributes": {
+		"width": {
+			"type": "number"
+		},
+		"height": {
+			"type": "number"
+		}
+	},
+	"editorStyle": "wp-block-post-comment-avatar-editor"
+}
