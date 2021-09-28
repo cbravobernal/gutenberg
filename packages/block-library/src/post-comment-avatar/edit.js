@@ -6,20 +6,22 @@ import classnames from 'classnames';
 /**
  * WordPress dependencies
  */
-import { useSelect } from '@wordpress/data';
 import {
 	InspectorControls,
 	__experimentalUseBorderProps as useBorderProps,
 	__experimentalImageSizeControl as ImageSizeControl,
 	useBlockProps,
 } from '@wordpress/block-editor';
-import { store as coreStore } from '@wordpress/core-data';
 import { PanelBody, ResizableBox } from '@wordpress/components';
+import { store as coreStore } from '@wordpress/core-data';
+import { useSelect } from '@wordpress/data';
 import { __, isRTL } from '@wordpress/i18n';
 
 export default ( { attributes, context, setAttributes } ) => {
 	const { className, style, height, width } = attributes;
 	const { commentId } = context;
+
+	// Maximum provided by the WordPress site.
 	const maxImageWidth = 96;
 	const maxImageHeight = 96;
 	if ( ! height || ! width ) {
@@ -72,7 +74,7 @@ export default ( { attributes, context, setAttributes } ) => {
 							...borderProps.style,
 						} }
 						src={ biggestAvatarUrl }
-						alt="Comment Author Avatar"
+						alt={ __( 'Post Comment Avatar Image' ) }
 					/>
 				</ResizableBox>
 			);
