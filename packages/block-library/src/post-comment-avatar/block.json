@@ -30,6 +30,5 @@
 		"__experimentalBorder": {
 			"radius": true
 		}
-	},
-	"editorStyle": "wp-block-post-comment-avatar-editor"
+	}
 }
