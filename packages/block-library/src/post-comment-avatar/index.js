@@ -8,7 +8,7 @@ import save from './save';
 /**
  * WordPress dependencies
  */
-import { postAuthor as icon } from '@wordpress/icons';
+import { postCommentsAvatar as icon } from '@wordpress/icons';
 
 const { name } = metadata;
 export { metadata, name };

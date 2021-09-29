@@ -6,19 +6,29 @@
 	"parent": [ "core/post-comment" ],
 	"description": "Post comment avatar.",
 	"textdomain": "default",
-	"usesContext": [ "commentId" ],
-	"supports": {
-		"html": true,
-		"__experimentalBorder": {
-			"radius": true
-		}
-	},
 	"attributes": {
 		"width": {
-			"type": "number"
+			"type": "number",
+			"default": 96
 		},
 		"height": {
-			"type": "number"
+			"type": "number",
+			"default": 96
+		},
+		"url": {
+			"type": "string"
+		},
+		"alt": {
+			"type": "string",
+			"source": "attribute",
+			"default": ""
+		}
+	},
+	"usesContext": [ "commentId" ],
+	"supports": {
+		"html": false,
+		"__experimentalBorder": {
+			"radius": true
 		}
 	},
 	"editorStyle": "wp-block-post-comment-avatar-editor"

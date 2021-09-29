@@ -18,18 +18,8 @@ import { useSelect } from '@wordpress/data';
 import { __, isRTL } from '@wordpress/i18n';
 
 export default ( { attributes, context, setAttributes } ) => {
-	const { className, style, height, width } = attributes;
+	const { className, style, height, width, alt } = attributes;
 	const { commentId } = context;
-
-	// Maximum provided by the WordPress site.
-	const maxImageWidth = 96;
-	const maxImageHeight = 96;
-	if ( ! height || ! width ) {
-		setAttributes( {
-			height: maxImageHeight,
-			width: maxImageWidth,
-		} );
-	}
 
 	const displayAvatar = useSelect( ( select ) => {
 		const { getEntityRecord } = select( coreStore );
@@ -39,12 +29,12 @@ export default ( { attributes, context, setAttributes } ) => {
 
 		if ( authorAvatarUrls ) {
 			const avatarUrls = Object.values( authorAvatarUrls );
-			const biggestAvatarUrl = avatarUrls[ 2 ];
+
 			return (
 				<ResizableBox
 					size={ {
-						width: width || maxImageWidth,
-						height: height || maxImageHeight,
+						width,
+						height,
 					} }
 					onResizeStop={ ( event, direction, elt, delta ) => {
 						setAttributes( {
@@ -73,8 +63,8 @@ export default ( { attributes, context, setAttributes } ) => {
 						style={ {
 							...borderProps.style,
 						} }
-						src={ biggestAvatarUrl }
-						alt={ __( 'Post Comment Avatar Image' ) }
+						src={ avatarUrls[ 2 ] }
+						alt={ alt }
 					/>
 				</ResizableBox>
 			);
@@ -88,8 +78,8 @@ export default ( { attributes, context, setAttributes } ) => {
 						onChange={ ( value ) => setAttributes( value ) }
 						width={ width }
 						height={ height }
-						imageWidth={ maxImageWidth }
-						imageHeight={ maxImageHeight }
+						imageWidth={ width }
+						imageHeight={ height }
 					/>
 				</PanelBody>
 			</InspectorControls>
