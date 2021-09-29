@@ -1,0 +1,23 @@
+[
+	{
+		"blockName": "core/post-comment-avatar",
+		"attrs": {
+			"url": "http://0.gravatar.com/avatar/c2b06ae950033b392998ada50767b50e?s=96&d=monsterid&r=g",
+			"style": {
+				"spacing": {
+					"padding": {
+						"top": "5px",
+						"right": "10px",
+						"bottom": "15px",
+						"left": "20px"
+					}
+				}
+			}
+		},
+		"innerBlocks": [],
+		"innerHTML": "\n<img\n\tstyle=\"\n\t\tpadding-top: 5px;\n\t\tpadding-right: 10px;\n\t\tpadding-bottom: 15px;\n\t\tpadding-left: 20px;\n\t\"\n\tsrc=\"http://0.gravatar.com/avatar/c2b06ae950033b392998ada50767b50e?s=96&amp;d=monsterid&amp;r=g\"\n\talt=\"\"\n\twidth=\"96\"\n\theight=\"96\"\n/>\n",
+		"innerContent": [
+			"\n<img\n\tstyle=\"\n\t\tpadding-top: 5px;\n\t\tpadding-right: 10px;\n\t\tpadding-bottom: 15px;\n\t\tpadding-left: 20px;\n\t\"\n\tsrc=\"http://0.gravatar.com/avatar/c2b06ae950033b392998ada50767b50e?s=96&amp;d=monsterid&amp;r=g\"\n\talt=\"\"\n\twidth=\"96\"\n\theight=\"96\"\n/>\n"
+		]
+	}
+]

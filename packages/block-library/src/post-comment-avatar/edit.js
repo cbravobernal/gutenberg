@@ -16,9 +16,11 @@ import { PanelBody, ResizableBox } from '@wordpress/components';
 import { store as coreStore } from '@wordpress/core-data';
 import { useSelect } from '@wordpress/data';
 import { __, isRTL } from '@wordpress/i18n';
+import { useEffect, useState } from '@wordpress/element';
 
 export default ( { attributes, context: { commentId }, setAttributes } ) => {
-	const { className, style, height, width, alt } = attributes;
+	const { className, style, height, width, alt, url } = attributes;
+
 	const { comment } = useSelect(
 		( select ) => {
 			const { getEntityRecord } = select( coreStore );
@@ -33,6 +35,18 @@ export default ( { attributes, context: { commentId }, setAttributes } ) => {
 	const avatarUrls = authorAvatarUrls
 		? Object.values( authorAvatarUrls )
 		: null;
+	const [ { defaultWidth, defaultHeight }, setDefaultSize ] = useState( {} );
+
+	// Set default widht, height and url on first render.
+	useEffect( () => {
+		setDefaultSize( { defaultWidth: width, defaultHeight: height } );
+	}, [] );
+
+	useEffect( () => {
+		setAttributes( {
+			url: avatarUrls ? avatarUrls[ avatarUrls.length - 1 ] : '', // we get the biggest resolution one
+		} );
+	}, [ avatarUrls ] );
 	return (
 		<>
 			<InspectorControls>
@@ -41,8 +55,9 @@ export default ( { attributes, context: { commentId }, setAttributes } ) => {
 						onChange={ ( value ) => setAttributes( value ) }
 						width={ width }
 						height={ height }
-						imageWidth={ width }
-						imageHeight={ height }
+						imageWidth={ defaultWidth }
+						imageHeight={ defaultHeight }
+						showPresets={ false }
 					/>
 				</PanelBody>
 			</InspectorControls>
@@ -81,7 +96,7 @@ export default ( { attributes, context: { commentId }, setAttributes } ) => {
 							style={ {
 								...borderProps.style,
 							} }
-							src={ avatarUrls[ 2 ] }
+							src={ url }
 							alt={ alt }
 						/>
 					</ResizableBox>

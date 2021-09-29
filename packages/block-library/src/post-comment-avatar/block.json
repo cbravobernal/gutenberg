@@ -29,6 +29,12 @@
 		"html": false,
 		"__experimentalBorder": {
 			"radius": true
+		},
+		"spacing": {
+			"padding": true,
+			"__experimentalDefaultControls": {
+				"padding": true
+			}
 		}
 	}
 }
