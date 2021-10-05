@@ -3,7 +3,6 @@
  */
 import metadata from './block.json';
 import edit from './edit';
-import save from './save';
 
 /**
  * WordPress dependencies
@@ -16,5 +15,4 @@ export { metadata, name };
 export const settings = {
 	icon,
 	edit,
-	save,
 };

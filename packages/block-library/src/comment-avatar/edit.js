@@ -13,40 +13,31 @@ import {
 	useBlockProps,
 } from '@wordpress/block-editor';
 import { PanelBody, ResizableBox } from '@wordpress/components';
-import { store as coreStore } from '@wordpress/core-data';
-import { useSelect } from '@wordpress/data';
+import { useEntityProp } from '@wordpress/core-data';
 import { __, isRTL } from '@wordpress/i18n';
-import { useEffect, useState } from '@wordpress/element';
 
 export default ( { attributes, context: { commentId }, setAttributes } ) => {
-	const { className, style, height, width, alt, url } = attributes;
+	const { className, style, height, width } = attributes;
 
-	const { comment } = useSelect(
-		( select ) => {
-			const { getEntityRecord } = select( coreStore );
-			return {
-				comment: getEntityRecord( 'root', 'comment', commentId ),
-			};
-		},
-		[ commentId ]
+	const [ avatars ] = useEntityProp(
+		'root',
+		'comment',
+		'author_avatar_urls',
+		commentId
 	);
+
+	const [ authorName ] = useEntityProp(
+		'root',
+		'comment',
+		'author_name',
+		commentId
+	);
+
+	const avatarUrls = avatars ? Object.values( avatars ) : null;
+	const sizes = avatars ? Object.keys( avatars ) : null;
+	const maxSize = sizes ? sizes[ sizes.length - 1 ] : null;
 	const borderProps = useBorderProps( attributes );
-	const authorAvatarUrls = comment?.author_avatar_urls; // eslint-disable-line camelcase
-	const avatarUrls = authorAvatarUrls
-		? Object.values( authorAvatarUrls )
-		: null;
-	const [ { defaultWidth, defaultHeight }, setDefaultSize ] = useState( {} );
 
-	// Set default widht, height and url on first render.
-	useEffect( () => {
-		setDefaultSize( { defaultWidth: width, defaultHeight: height } );
-	}, [] );
-
-	useEffect( () => {
-		setAttributes( {
-			url: avatarUrls ? avatarUrls[ avatarUrls.length - 1 ] : '', // we get the biggest resolution one
-		} );
-	}, [ avatarUrls ] );
 	return (
 		<>
 			<InspectorControls>
@@ -55,8 +46,8 @@ export default ( { attributes, context: { commentId }, setAttributes } ) => {
 						onChange={ ( value ) => setAttributes( value ) }
 						width={ width }
 						height={ height }
-						imageWidth={ defaultWidth }
-						imageHeight={ defaultHeight }
+						imageWidth={ maxSize }
+						imageHeight={ maxSize }
 						showPresets={ false }
 					/>
 				</PanelBody>
@@ -96,8 +87,8 @@ export default ( { attributes, context: { commentId }, setAttributes } ) => {
 							style={ {
 								...borderProps.style,
 							} }
-							src={ url }
-							alt={ alt }
+							src={ avatarUrls[ avatarUrls.length - 1 ] }
+							alt={ `${ authorName } ${ __( 'Avatar' ) }` }
 						/>
 					</ResizableBox>
 				) : null }

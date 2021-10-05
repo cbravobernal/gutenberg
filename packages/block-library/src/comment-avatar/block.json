@@ -1,10 +1,10 @@
 {
 	"apiVersion": 2,
-	"name": "core/post-comment-avatar",
-	"title": "Post Comment Avatar",
+	"name": "core/comment-avatar",
+	"title": "Comment Avatar",
 	"category": "design",
 	"parent": [ "core/post-comment" ],
-	"description": "Post comment avatar.",
+	"description": "Comment Avatar.",
 	"textdomain": "default",
 	"attributes": {
 		"width": {
@@ -14,14 +14,6 @@
 		"height": {
 			"type": "number",
 			"default": 96
-		},
-		"url": {
-			"type": "string"
-		},
-		"alt": {
-			"type": "string",
-			"source": "attribute",
-			"default": ""
 		}
 	},
 	"usesContext": [ "commentId" ],
