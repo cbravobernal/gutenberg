@@ -22,7 +22,6 @@ $resize-handler-container-size: $resize-handler-size + ($grid-unit-05 * 2); // M
 	width: inherit;
 }
 
-
 // This is the "visible" resize handle - the circle part
 .components-resizable-box__handle::after {
 	display: block;
