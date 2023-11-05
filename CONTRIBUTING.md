@@ -23,3 +23,5 @@ To learn all about contributing to the Gutenberg project, see the [Contributor G
 ## Reporting Security Issues
 
 Please see [SECURITY.md](/SECURITY.md).
+
+## Testing a PR
