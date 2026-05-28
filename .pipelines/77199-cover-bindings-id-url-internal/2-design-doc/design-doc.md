@@ -66,9 +66,9 @@ Spec: `<artifacts>/1-spec/spec.md` (approved). All AC, DC, Req references resolv
 | `packages/block-library/src/cover/block.json` | Attribute schema | Add `"role": "content"` to `id` (AC-1, AC-2 prerequisite) |
 | `lib/compat/wordpress-7.1/block-bindings.php` (NEW) | Server allow-list + Cover-scoped render filters | (a) `block_bindings_supported_attributes` filter adds `id`,`url` to `core/cover`; (b) `render_block_data` filter to neutralise `useFeaturedImage` before `render_callback`; (c) `gutenberg_cover_bindings_render_block` filter on `render_block` priority 9 |
 | `lib/load.php` | Bootstrap | `require __DIR__ . '/compat/wordpress-7.1/block-bindings.php';` in the REST-server block (alongside other 7.1 entries) |
-| `packages/block-library/src/cover/edit/index.js` | Reactive observer, derived values, render-tree gating | New `useCoverBindingState` hook, replace existing `useEffect([mediaUrl])` with a single observer on `effectiveUrl`, gate the empty-cover branch on `bindingActive || bindingUnresolvable`, render the `<Placeholder>` for the unresolvable case inline. |
+| `packages/block-library/src/cover/edit/index.js` | Reactive observer, derived values, render-tree gating | New `useCoverBindingState` hook, replace existing `useEffect([mediaUrl])` with a single observer on `effectiveUrl`, gate the empty-cover branch on `bindingActive \|\| bindingUnresolvable`, render the `<Placeholder>` for the unresolvable case inline, AND wrap the line-750 `<CoverPlaceholder>` call site in `! bindingActive && (…)` so the drop zone is not present on bound covers (§5.5 / Issue 5 of iter-2 review). |
 | `packages/block-library/src/cover/edit/inspector-controls.js` | UI gating | Gate parallax/repeat ToolsPanelItems on `! bindingActive` |
-| `packages/block-library/src/cover/edit/block-controls.js` | UI gating | Pass `bindingActive` and gate the "Use featured image" toggle (set `onToggleFeaturedImage={ bindingActive ? undefined : toggleUseFeaturedImage }`) AND the media-replace `onSelect` (set `onSelect={ bindingActive ? undefined : onSelectMedia }`). The "Embed video from URL" `<MenuItem>` child of `<MediaReplaceFlow>` MUST remain unconditionally accessible (preserves AC-21 affordance). |
+| `packages/block-library/src/cover/edit/block-controls.js` | UI gating | Pass `bindingActive`. Render `<MediaReplaceFlow>` ONLY when `! bindingActive`. The "Embed video from URL" `<MenuItem>` is dropped from the bound-cover toolbar by construction; this is acceptable because (a) embed-video × bindings is explicitly out-of-scope per spec Out-of-Scope, (b) AC-21's "no regression on embed-video" only applies to covers where `backgroundType === 'embed-video'`, which (per §5.1 step 2) forces `bindingActive = false`, so the `<MediaReplaceFlow>` remains rendered there. See §5.5 for the full rationale and the verified gating mechanism. |
 | `phpunit/blocks/render-block-cover-test.php` | PHPUnit | New cases: bound-url → `<img src=$bound>`; default `dimRatio:100` + binding → `has-background-dim-50`; mismatched/unresolvable → no `<img>`; `useFeaturedImage:true + bindingActive` → exactly one `<img>` with bound URL |
 | `test/e2e/specs/editor/blocks/cover.spec.js` | E2E | New `describe('Block Bindings — Pattern Overrides')` block (AC-22..AC-24) |
 | `backport-changelog/7.1/<core-pr>.md` | Metadata | Created at the same time the Core PR is filed; Gutenberg PR description includes a `TODO: backport-changelog entry pending Core PR` note and is updated once the Core PR number is known. Not a blocker for the Gutenberg PR landing. |
@@ -251,15 +251,17 @@ export default function useCoverBindingState( { clientId, attributes, context } 
 Implementation outline:
 1. Expand `attributes.metadata?.bindings` via `replacePatternOverridesDefaultBinding( bindings, [ 'id', 'url' ] )` from `packages/block-editor/src/utils/block-bindings.js`.
 2. `bindingActive = expanded?.id && expanded?.url && expanded.id.source === expanded.url.source && JSON.stringify(expanded.id.args ?? null) === JSON.stringify(expanded.url.args ?? null) && backgroundType !== 'embed-video'`.
-3. Resolve values via **a single `useSelect`** that reads both the bound URL and ID and the attachment record in one closure, deduplicating subscription work:
+3. Resolve values via **a single `useSelect`** that reads both the bound URL and ID and the attachment record in one closure, deduplicating subscription work. `getBlockBindingsSource` is imported directly from `@wordpress/blocks` — it is a registry lookup (not a state-dependent selector) verified at `packages/blocks/src/api/registration.ts:903-907` as a module-level export that internally calls `select( blocksStore ).getBlockBindingsSource( name )`. The `@wordpress/blocks` store is the canonical home of the bindings-source registry (private selector at `packages/blocks/src/store/private-selectors.ts:252`); it is NOT on `blockEditorStore`. Existing trunk callers follow the same pattern (`packages/block-editor/src/components/block-bindings/source-fields-list.js:9`, `packages/block-editor/src/components/rich-text/index.js:23`).
 
    ```js
+   import { getBlockBindingsSource } from '@wordpress/blocks';
+   // ... inside the hook body:
    const { bindingResolvedUrl, bindingResolvedId, bindingResolvedAttachment } =
        useSelect( ( select ) => {
            if ( ! bindingActive ) {
                return { bindingResolvedUrl: undefined, bindingResolvedId: undefined, bindingResolvedAttachment: undefined };
            }
-           const source = unlock( select( blockEditorStore ) ).getBlockBindingsSource( expanded.url.source );
+           const source = getBlockBindingsSource( expanded.url.source );
            if ( ! source ) {
                return { bindingResolvedUrl: undefined, bindingResolvedId: undefined, bindingResolvedAttachment: undefined };
            }
@@ -389,7 +391,20 @@ if ( ! useFeaturedImage && ! hasInnerBlocks && ! hasBackground ) {
 }
 ```
 
-The standard `<CoverPlaceholder>` continues to render in the unbound empty-cover branch and (lower in the component, line 750) inside the `<TagName>` with `disableMediaButtons`. **That second `<CoverPlaceholder>` (line 750) is also reached on bound covers** (when `hasBackground` is true), but it is rendered with `disableMediaButtons` — `<MediaPlaceholder>`'s `disableMediaButtons` prop hides the upload-via-DropZone and featured-image affordances. (Verified in `@wordpress/block-editor`'s `MediaPlaceholder`: `disableMediaButtons` short-circuits the upload-zone and gallery-toggle rendering.) Therefore no additional gating is required at that site.
+The standard `<CoverPlaceholder>` continues to render in the unbound empty-cover branch (this branch in §5.4 (1)) and (lower in the component, line 750) inside the `<TagName>`. **The line-750 `<CoverPlaceholder>` IS reached on bound covers when `hasBackground=true`**; verified at `packages/block-editor/src/components/media-placeholder/index.js:551-552`, `disableMediaButtons` short-circuits to `<MediaUploadCheck>{ renderDropZone() }</MediaUploadCheck>` — the upload / media-library / featured-image buttons are hidden, but the drop zone IS still rendered. The drop-zone's `onFilesDrop` is wired (line 385) to the parent's `onFilesUpload`, which in `cover-placeholder.js:22-26` calls `onSelectMedia({ url: createBlobURL(file) })` — mutating the cover's `url` attribute. To keep AC-14 / Req 7's intent ("direct media replacement from inside the Cover is not offered when bound") whole, the line-750 site is gated at its call site in `index.js`:
+
+```jsx
+{ ! bindingActive && (
+    <CoverPlaceholder
+        disableMediaButtons
+        onSelectMedia={ onSelectMedia }
+        onError={ onUploadError }
+        toggleUseFeaturedImage={ toggleUseFeaturedImage }
+    />
+) }
+```
+
+This is a one-line wrapper added immediately around the existing line-750 call site. On unbound covers (`bindingActive=false`), the behaviour is byte-identical to trunk (AC-20). On bound covers, the entire `<CoverPlaceholder>` — including its drop zone — is omitted from the render tree. `cover-placeholder.js` itself is NOT edited (§2.2 invariant preserved). See §13 trade-off table "Line-750 `<CoverPlaceholder>` drop-zone" for alternatives considered.
 
 **(2) Non-empty render branch (around `url && isImageBackground` at index.js line 672):**
 
@@ -427,41 +442,67 @@ And the overlay span class computation uses `effectiveDimRatio` rather than `dim
 
 **`inspector-controls.js`** — wrap the `<>` fragment containing the "Fixed background" and "Repeated background" `ToolsPanelItem`s in `! bindingActive && …`. Pass `bindingActive` as a new prop from `CoverEdit`.
 
-**`block-controls.js`** — the `<MediaReplaceFlow>` element MUST remain rendered in both bound and unbound states, because the "Embed video from URL" `<MenuItem>` is its child and AC-21 requires that affordance to remain accessible on embed-video covers regardless of binding presence. Gating is done at the **prop level**, not by removing the `<MediaReplaceFlow>` wrapper:
+**`block-controls.js`** — the entire `<MediaReplaceFlow>` element is conditionally rendered. When `! bindingActive`, the current trunk shape is preserved verbatim (including the "Embed video from URL" `<MenuItem>` child). When `bindingActive`, the `<MediaReplaceFlow>` is omitted from the render output entirely; the `<BlockControls group="other">` group renders empty (or is itself elided), and no media-replace / upload / featured-image / embed-URL affordances exist on the bound-cover toolbar:
 
 ```jsx
-<MediaReplaceFlow
-    mediaId={ id }
-    mediaURL={ url }
-    allowedTypes={ ALLOWED_MEDIA_TYPES }
-    onSelect={ bindingActive ? undefined : onSelectMedia }
-    onToggleFeaturedImage={ bindingActive ? undefined : toggleUseFeaturedImage }
-    useFeaturedImage={ bindingActive ? undefined : useFeaturedImage }
-    name={ ! url ? __( 'Add media' ) : __( 'Replace' ) }
-    onReset={ bindingActive ? undefined : onClearMedia }
-    variant="toolbar"
->
-    { ( { onClose } ) => (
-        <MenuItem
-            icon={ link }
-            onClick={ () => {
-                setIsEmbedUrlInputOpen( true );
-                onClose();
-            } }
+<BlockControls group="other">
+    { ! bindingActive && (
+        <MediaReplaceFlow
+            mediaId={ id }
+            mediaURL={ url }
+            allowedTypes={ ALLOWED_MEDIA_TYPES }
+            onSelect={ onSelectMedia }
+            onToggleFeaturedImage={ toggleUseFeaturedImage }
+            useFeaturedImage={ useFeaturedImage }
+            name={ ! url ? __( 'Add media' ) : __( 'Replace' ) }
+            onReset={ onClearMedia }
+            variant="toolbar"
         >
-            { __( 'Embed video from URL' ) }
-        </MenuItem>
+            { ( { onClose } ) => (
+                <MenuItem
+                    icon={ link }
+                    onClick={ () => {
+                        setIsEmbedUrlInputOpen( true );
+                        onClose();
+                    } }
+                >
+                    { __( 'Embed video from URL' ) }
+                </MenuItem>
+            ) }
+        </MediaReplaceFlow>
     ) }
-</MediaReplaceFlow>
+</BlockControls>
 ```
 
-`MediaReplaceFlow` (verified at `packages/block-editor/src/components/media-replace-flow/`) renders the "Use featured image" toggle ONLY when `onToggleFeaturedImage` is a function; setting it to `undefined` removes that menu item from the dropdown. Same for `onSelect` (the upload + media-library buttons short-circuit when `onSelect` is falsy). `onReset` undefined removes the "Reset" menu item. The "Embed video from URL" `<MenuItem>` child is unaffected — it is rendered through `MediaReplaceFlow`'s `children` prop and surfaces unconditionally inside the dropdown. AC-13, AC-14 satisfied without hiding the embed affordance (AC-21 preserved).
+**Why conditional render and NOT prop-level gating.** Verified against `packages/block-editor/src/components/media-replace-flow/index.js`:
+- Line 233: the "Use featured image" `<MenuItem>` IS gated on `onToggleFeaturedImage &&` — prop-level `undefined` does remove it.
+- Line 245: the "Reset" `<MenuItem>` IS gated on `mediaURL && onReset &&` — prop-level `undefined` does remove it.
+- Lines 193–212: the `<MediaUpload>` ("Open Media Library") and `<FormFileUpload>` ("Upload") `<MenuItem>`s render unconditionally inside `<MediaUploadCheck>`. **Neither is gated on `onSelect`.** Setting `onSelect={ undefined }` does NOT remove them from the dropdown. Worse: line 115 calls `onSelect( media )` directly from the internal `selectMedia` helper, and line 124 calls `onSelect( files )` directly from `uploadFiles`. Setting `onSelect={ undefined }` would crash with `TypeError: onSelect is not a function` when a user clicks "Open Media Library" or "Upload". The prior-iteration prop-level gating approach was therefore a runtime hazard.
 
-**Verification of AC-14 surface coverage.** AC-14 requires the media-replace control to be NOT in the DOM. The `<MediaReplaceFlow>` toolbar button remains in the DOM under the gating above (because it still hosts the embed `<MenuItem>`); the dropdown's media-replace and use-featured-image menu items are gone. **This is a minor stretch of the AC-14 literal wording.** AC-14's intent (Req 7) is that direct media replacement from inside the Cover is not offered when bound. Setting `onSelect` / `onToggleFeaturedImage` / `onReset` to `undefined` removes the media-replace and featured-image menu items from the dropdown. The remaining `<MediaReplaceFlow>` toolbar button surfaces only the "Embed video from URL" affordance, which is explicitly preserved by AC-21. The e2e test (§11.3) asserts on the absence of the media-replace and featured-image **menu items**, not on the absence of the `<MediaReplaceFlow>` toolbar button. **If reviewers insist on absolute absence of `<MediaReplaceFlow>` from the DOM**, the spec must be re-opened to reconcile AC-14 vs AC-21; the design's current reading prioritises AC-21's explicit "no observable runtime effect under this PR" against AC-14's literal DOM-absence wording, because AC-21 is the more specific contract for the embed-video case.
+Removing the entire `<MediaReplaceFlow>` is the only mechanism that achieves AC-14's literal-DOM-absence wording (the toolbar's media-replace dropdown is not present at all when `bindingActive`).
 
-**`cover-placeholder.js` itself is not modified.** Its sole call sites are in `index.js` (lines 616 and 750). The line-616 site is now unreachable under `bindingActive || bindingUnresolvable` (replaced by the binding-aware placeholder branch in §5.4 (1)). The line-750 site is reached on bound covers but uses `disableMediaButtons`, which removes both the upload and the featured-image affordance from `<MediaPlaceholder>`. AC-13, AC-14, Req 7 satisfied without editing `cover-placeholder.js`.
+**Why losing the "Embed video from URL" affordance on bound covers is acceptable.** AC-21 requires non-regression for covers with `backgroundType === 'embed-video'`. Per §5.1 step 2, embed-video covers force `bindingActive = false` (the guard `backgroundType !== 'embed-video'` is part of the active-binding predicate). So embed-video covers ALWAYS render the full `<MediaReplaceFlow>` including the embed-URL menu item — AC-21 is preserved. The only case that loses the embed-URL menu item is a bound non-embed-video cover, where the user has actively chosen to bind `id`+`url` to a media-library attachment; converting such a cover to embed-video is out-of-scope under "Embed-video × bindings interaction" in the spec's Out-of-Scope section, and the user can unbind first if needed. This trade-off is explicit and tied to the resolved Out-of-Scope item.
 
-**`<MediaReplaceFlow>` "Use featured image" toggle** is gated by setting `onToggleFeaturedImage` to `undefined` (above). AC-13 satisfied. **Inspector-controls.js does NOT separately render a use-featured-image toggle**, verified by inspection — there is no second inspector site.
+**Verification of AC-14 surface coverage (post-fix).** AC-14 requires the media-replace control to be NOT in the DOM. Under the conditional render above, `<MediaReplaceFlow>` is completely absent from the bound-cover DOM. The e2e test (§11.3) asserts on the absence of the toolbar replace-button (the rendered `<ToolbarButton>` from `<MediaReplaceFlow>`'s `renderToggle` path at lines 180–189 of media-replace-flow/index.js) — a single locator. AC-13 (Use featured image) and AC-14 (media-replace) are both satisfied by the wrapper's absence; no need to reason about individual `<MenuItem>` gating any more.
+
+**`cover-placeholder.js` itself is not modified.** Its sole call sites are in `index.js` (lines 616 and 750). The line-616 site is now unreachable under `bindingActive || bindingUnresolvable` (replaced by the binding-aware placeholder branch in §5.4 (1)). The line-750 site is reached on bound covers (when `hasBackground === true`) but renders `<CoverPlaceholder disableMediaButtons … />`. Verified at `packages/block-editor/src/components/media-placeholder/index.js:551-552`: when `disableMediaButtons` is true, only the drop zone renders (no upload / media-library / featured-image buttons). The drop-zone IS still rendered, however, and its `onFilesDrop` is wired to `onFilesUpload` (line 385), which in `cover-placeholder.js:22-26` calls `onSelectMedia({ url: createBlobURL(file) })`. **A user dragging a file onto a bound cover would still mutate the cover's `url` attribute** through `onSelectMedia`. This is a *user-initiated* mutation (DC-2 only prohibits derivation-path mutation triggered by binding state changes), so DC-2 is technically satisfied; however, AC-14 / Req 7's *intent* is "direct media replacement from inside the Cover is not offered when bound", and a drop zone IS an alternative form of media-replace surface.
+
+To resolve this cleanly without editing `cover-placeholder.js`, the line-750 site is gated at its call site in `index.js`: render the `<CoverPlaceholder>` only when `! bindingActive`. `MediaPlaceholder`'s `disableDropZone` prop (verified at `packages/block-editor/src/components/media-placeholder/index.js:378-381`: `if ( disableDropZone ) { return null; }` short-circuits drop-zone rendering) is an alternative — but the call site is in `index.js`, and gating the whole `<CoverPlaceholder>` is the surgical one-line change. Concrete edit at index.js line 750:
+
+```jsx
+{ ! bindingActive && (
+    <CoverPlaceholder
+        disableMediaButtons
+        onSelectMedia={ onSelectMedia }
+        onError={ onUploadError }
+        toggleUseFeaturedImage={ toggleUseFeaturedImage }
+    />
+) }
+```
+
+`bindingActive=false` covers (the entire pre-bindings universe of Covers) keep the current `<CoverPlaceholder>` behaviour byte-for-byte. AC-13, AC-14, AC-20 (non-regression) all satisfied; Req 7's intent honoured; `cover-placeholder.js` source unchanged.
+
+**`<MediaReplaceFlow>` "Use featured image" toggle** is removed alongside the rest of `<MediaReplaceFlow>` by the conditional render above. AC-13 satisfied. **Inspector-controls.js does NOT separately render a use-featured-image toggle**, verified by inspection — there is no second inspector site.
 
 ### 5.6 Pattern Overrides integration
 
@@ -534,7 +575,21 @@ if ( ! function_exists( 'gutenberg_cover_bindings_prepare_block' ) ) {
 }
 ```
 
-`gutenberg_cover_bindings_is_active( $attrs )` is a private helper defined in the same file. It applies `__default` expansion (via inline logic copied from `lib/compat/wordpress-6.9/block-bindings.php:257-281`, scoped to `[ 'id', 'url' ]`), checks both bindings exist and resolve to the same source instance, and returns a bool. **This replaces the previously-undefined `gutenberg_cover_bindings_expand` helper.**
+`gutenberg_cover_bindings_is_active( $attrs )` is a private helper defined in the same file. It applies `__default` expansion (via inline logic copied from `lib/compat/wordpress-6.9/block-bindings.php:257-281`, scoped to `[ 'id', 'url' ]`), then checks both bindings exist AND resolve to the same source instance via the following two-part equality, mirroring §5.1 step 2's client-side check:
+
+```php
+$same_source = ( $expanded['id']['source'] ?? null ) === ( $expanded['url']['source'] ?? null );
+$same_args   = ( $expanded['id']['args']   ?? null ) ==  ( $expanded['url']['args']   ?? null );
+// Note: `==` (loose) compares associative arrays element-wise irrespective of key order;
+// `===` would require identical key ordering. Loose comparison is the correct semantic
+// for source `args` (a small associative bag of scalars), and it matches the JS-side
+// JSON.stringify check (which is order-sensitive only on object literals — and source
+// args in practice come from the same builder for both `id` and `url` of a Cover, so
+// key order is identical in real shapes; loose-equality is the safe relaxation).
+return $same_source && $same_args && ! empty( $expanded['id'] ) && ! empty( $expanded['url'] );
+```
+
+The bool result is what gates Part 2's `useFeaturedImage` mutation and Part 3's URL substitution. **This replaces the previously-undefined `gutenberg_cover_bindings_expand` helper.** Spec Req 26 / Glossary "Active binding" explicitly require `args` equality where applicable; the explicit check here closes the client/server agreement gap.
 
 **Why `render_block_data` solves the AC-18 first-pass injection problem.** Verified at `/Users/carlos/.wp-env/cc4ba7b5738d99b49b19f399987f6e49/WordPress/wp-includes/class-wp-block.php:531-596`: `WP_Block::render()` calls `process_block_bindings()` (line 532), merges resolved bindings into `$this->attributes` (lines 534-536), and then calls `render_callback` (line 596). The `render_block_data` filter runs **before** `WP_Block::render()` is constructed (`render_block()` in `wp-includes/blocks.php:2398` applies it on the parsed block array). By that point, `$parsed_block['attrs']['useFeaturedImage']` has been forced to `false`, so:
 
@@ -632,7 +687,29 @@ Idempotent (calling twice is harmless). Targets the overlay span only; the `has-
 
 ### 6.4 Helper: `gutenberg_cover_bindings_strip_image`
 
-For the unresolvable / mismatched / external-URL case (Req 20, AC-5, AC-6): use the same `preg_match` + `substr`-splice approach (form-2 pattern, plus a form-1 pattern for plain `<img>`) to **remove** any element with class `wp-block-cover__image-background` from `$content`. The cover renders without an image element, overlay-only.
+For the unresolvable / mismatched / external-URL case (Req 20, AC-5, AC-6): use the same `preg_match` + `substr`-splice approach to **remove** any element with class `wp-block-cover__image-background` from `$content`. The cover renders without an image element, overlay-only.
+
+Two patterns are tried in sequence (whichever matches first wins; both forms never co-exist in a Cover's saved markup because `save.js` emits exactly one image element):
+
+```php
+// Form 2: parallax/repeat saved form — a self-closed empty <div>.
+$form2_pattern = '/<div\s+[^>]*\bwp-block-cover__image-background\b[^>]*><\/div>/U';
+
+// Form 1: plain saved form — a void <img> (with or without trailing slash).
+// Matches everything up to the closing ">"; void elements have no </img>.
+$form1_pattern = '/<img\s+[^>]*\bwp-block-cover__image-background\b[^>]*\/?\s*>/U';
+
+foreach ( array( $form2_pattern, $form1_pattern ) as $pattern ) {
+    if ( 1 === preg_match( $pattern, $content, $matches, PREG_OFFSET_CAPTURE ) ) {
+        $start  = $matches[0][1];
+        $length = strlen( $matches[0][0] );
+        return substr( $content, 0, $start ) . substr( $content, $start + $length );
+    }
+}
+return $content;
+```
+
+The `U` (ungreedy) modifier is essential for both patterns — without it, `[^>]*` would greedily span past intermediate `>` boundaries when other attributes contain `>` literals (rare but possible in well-formed but edge-case markup). The form-1 pattern matches both XHTML-style `<img ... />` and HTML5-style `<img ... >` because `\/?\s*>` makes the trailing slash optional. Both patterns are scoped by the `\b...\b` word-boundary anchor around the class name, ensuring matches only on elements that actually carry the `wp-block-cover__image-background` class (not coincidental substring hits on neighbouring attributes).
 
 ### 6.5 PHPUnit coverage
 
@@ -729,9 +806,12 @@ test.describe( 'Block Bindings — Pattern Overrides round-trip', () => {
         // 3. Assert (default state):
         //    - Editor preview <img src> points at defaultMedia.url.
         //    - Parallax / Repeat ToolsPanelItems are not visible (AC-11, AC-12).
-        //    - <MediaReplaceFlow> "Use featured image" MenuItem is not visible (AC-13).
-        //    - <MediaReplaceFlow> upload/replace MenuItems are not visible (AC-14).
-        //    - <MediaReplaceFlow> "Embed video from URL" MenuItem IS visible (AC-21 preserved).
+        //    - <MediaReplaceFlow> toolbar dropdown button is not in the DOM (AC-13 + AC-14).
+        //      The single locator `page.getByRole('button', { name: /^(Replace|Add media)$/ })`
+        //      should resolve to zero matches inside the Cover's BlockControls toolbar.
+        //    - On a SEPARATE embed-video Cover (control case), the same button IS visible
+        //      with the "Embed video from URL" MenuItem accessible (AC-21 preserved on
+        //      the population where `backgroundType === 'embed-video'`).
         //    - Overlay span class does NOT contain 'has-background-dim-100' (AC-15).
         //    - ResetOverridesControl toolbar button is disabled (AC-10, OQ-2).
         // 4. Override the instance: programmatically setBlockAttributes with new url+id.
@@ -761,7 +841,7 @@ Existing `cover.spec.js` cases run untouched. Existing `packages/block-library/s
 - **Unbound covers untouched.** All gating predicates (`bindingActive`, the server filters' early-return on `! gutenberg_cover_bindings_is_active( $attrs )`) flip false when `metadata.bindings` is absent. The new code path is dead code on every existing unbound cover. AC-20.
 - **No `save.js` change.** The serialized markup shape is identical to trunk. Deprecation chain unchanged. AC-20.
 - **No new attribute.** `id` gains a `role: "content"` annotation only — metadata-only, not part of the saved markup.
-- **Embed-video carve-out.** Both client and server short-circuit on `backgroundType === 'embed-video'`, regardless of binding presence. AC-21. The "Embed video from URL" menu item under `<MediaReplaceFlow>` remains accessible on bound covers (regardless of `backgroundType`), preserving the affordance per AC-21.
+- **Embed-video carve-out.** Both client and server short-circuit on `backgroundType === 'embed-video'`, regardless of binding presence. AC-21. On embed-video covers, `bindingActive=false` per §5.1 step 2, so `<MediaReplaceFlow>` (including the "Embed video from URL" `<MenuItem>` child) renders as on trunk — the affordance is fully preserved on the AC-21 population. On bound NON-embed-video covers, `<MediaReplaceFlow>` is conditionally omitted (§5.5), so the embed-URL menu item is unreachable there; this is consistent with the Out-of-Scope "Embed-video × bindings interaction" bullet (the bound→embed-video conversion path is not supported in this PR).
 - **`useFeaturedImage` precedence rule (AC-18).** When both `useFeaturedImage: true` and an active binding co-exist on the same cover, the binding wins. Mechanism: the `render_block_data` filter (§6.1 Part 2) mutates `$parsed_block['attrs']['useFeaturedImage'] = false` BEFORE `render_callback` runs, so `render_block_core_cover` skips its featured-image injection branch. The stored `useFeaturedImage` attribute on the post content is NOT mutated (the mutation is to the in-flight `$parsed_block` array, scoped to this single render pass). DC-2 is preserved on the persistence path (no `setAttributes` on client, no persisted post_content change on server). On the client, `bindingActive` is derived from the persisted attribute state including `useFeaturedImage`; if a saved Cover has both `useFeaturedImage: true` and bindings, the editor's `effectiveUrl` prefers `bindingResolvedUrl` over `mediaUrl` per §5.2, matching the server's precedence. AC-18 satisfied.
 - **`! function_exists` / version guards.** The new compat file follows the established pattern from `lib/compat/wordpress-6.9/block-comments.php:63,84`. Graceful degradation on a WP install lacking the bindings infrastructure (Req 39). The Cover Edit component's new hook reads `metadata?.bindings` defensively — when `__experimentalBlockBindingsSupportedAttributes['core/cover']` is undefined (pre-7.1 server), `bindingActive` returns false and the existing code path runs.
 - **AC-26 (PR shape — file path).** The new compat file lives at `lib/compat/wordpress-7.1/block-bindings.php` and is loaded via `lib/load.php`. No file under `lib/compat/wordpress-7.0/`. See §2.2 and §6.1.
@@ -815,6 +895,37 @@ Alt B (the prior design's approach) leaves a window in which `render_callback` e
 
 The chosen `render_block_data` approach intercepts at the parsed-block level, before `WP_Block::render` even begins. Verified at `wp-includes/blocks.php:2398` and `wp-includes/class-wp-block.php:531-596`. DC-2 is preserved because the mutation is on the in-flight `$parsed_block` array passed by reference for this render only — the persisted post_content is not touched.
 
+### AC-14 gating: conditional render vs prop-level `undefined` vs upstream change
+
+Three options considered for hiding `<MediaReplaceFlow>` on bound covers:
+
+| | Chosen: conditional render in block-controls.js | Alt A: prop-level undefined (iter-2 design) | Alt B: modify `<MediaReplaceFlow>` upstream |
+| --- | --- | --- | --- |
+| AC-14 literal DOM absence | Yes | **No** — toolbar button + Open Media Library + Upload menu items remain | Yes (if upstream gate added) |
+| Runtime safety | Safe | **Crash** — clicking "Open Media Library" or "Upload" calls `onSelect(media)` with `onSelect=undefined` (verified at `media-replace-flow/index.js:115, 124`) → TypeError | Safe |
+| "Embed video from URL" preserved on bound covers | No (acceptable per §5.5 trade-off) | Yes | Depends on upstream change shape |
+| Shared-component churn | None | None | Significant (affects every `<MediaReplaceFlow>` consumer) |
+| Owner-review cost | Cover-scoped only | Cover-scoped only | Cross-team (block-editor + every consumer) |
+
+Alt A (the iter-2 design) was rejected per the iter-2 review (Issue 1): `<MediaUploadCheck>`-wrapped `<MediaUpload>` ("Open Media Library") and `<FormFileUpload>` ("Upload") render unconditionally at lines 193–232 of `media-replace-flow/index.js`; the internal `selectMedia` helper calls `onSelect(media)` at line 115 and `uploadFiles` calls `onSelect(files)` at line 124, both crashing when `onSelect=undefined`. Prop-level gating works for "Use featured image" (line 233) and "Reset" (line 245) which ARE gated on their callbacks, but not for the upload/media-library paths.
+
+Alt B (upstream gate on `<MediaUploadCheck>` subtree) is the right long-term fix but out-of-scope for this PR — it requires owner-team sign-off and touches every `<MediaReplaceFlow>` consumer.
+
+The chosen conditional render is the smallest correct change. The cost is losing the "Embed video from URL" affordance on bound non-embed-video covers; the §5.5 trade-off section traces this to the Out-of-Scope "Embed-video × bindings interaction" item.
+
+### Line-750 `<CoverPlaceholder>` drop-zone: gate at call site vs `disableDropZone` vs accept
+
+Three options for the line-750 `<CoverPlaceholder disableMediaButtons …/>` site (which on bound covers with `hasBackground=true` still renders a drop zone that calls `onSelectMedia` when files are dropped, verified at `media-placeholder/index.js:378-385, 551-552` and `cover-placeholder.js:22-26`):
+
+| | Chosen: gate at call site `! bindingActive && <CoverPlaceholder …/>` | Alt A: pass `disableDropZone` through `<CoverPlaceholder>` | Alt B: accept the drop-zone as a user-initiated DC-2-exempt path |
+| --- | --- | --- | --- |
+| Lines changed | 1 (wrapper around line-750 site in `index.js`) | 2–3 (add `disableDropZone` prop forwarding in `cover-placeholder.js`) | 0 (documentation only) |
+| Touches `cover-placeholder.js` | No | Yes | No |
+| Honours AC-14 / Req 7 intent (no media-replace surface on bound covers) | Yes | Yes | Stretched (a drop zone IS a media-replace surface) |
+| Unbound-cover non-regression (AC-20) | Identical to trunk when `bindingActive=false` | Identical | Identical |
+
+Chosen approach: gate at the call site. The §2.2 "no `cover-placeholder.js` edits" invariant is preserved. The drop-zone path is removed for bound covers along with the rest of `<CoverPlaceholder>`'s functionality at that site. `bindingUnresolvable` covers fall through the line-616 binding-aware branch in §5.4 (1) and never reach line 750 in any case. The line-750 drop-zone's absence is implicitly covered by the bound-cover render tree no longer including `<CoverPlaceholder>`; an explicit "drag-and-drop on bound cover does not mutate `url`" assertion can be added to the §11.3 e2e plan as a follow-up if reviewers ask.
+
 ### Client-side: source-agnostic observer vs explicit `useBindings` derivation
 
 Considered: a separate `useEffect` keyed on `metadata.bindings` that synchronises a derived `bindingUrl` state into the existing observer. Rejected: that is exactly the multi-`useEffect` proliferation Risk 1 / DC-1 forbid. The chosen design (one effect, keyed on `effectiveUrl`, with `useEffectEvent` for latest-value reads) collapses every URL-derivation trigger into a single signal.
@@ -852,5 +963,5 @@ The design explicitly does NOT implement:
 2. **`gutenberg_cover_bindings_is_active` duplicates `__default` expansion logic** from `lib/compat/wordpress-6.9/block-bindings.php:257-281`. This is intentional (we need the expansion result BEFORE `gutenberg_process_block_bindings` runs, in the `render_block_data` filter, while the generic helper does it inline) but introduces a small divergence risk if Core changes expansion semantics. Mitigation: PHPUnit case §6.5(7) and #6.5(5) catch behavioural divergence; if Core promotes expansion into a public helper, swap to it.
 3. **`gutenberg_process_block_bindings` is called twice per render** (once via `WP_Block::render()` at line 532, once via the priority-10 generic filter's `$instance->render()` re-call). Functionally correct (resolution is idempotent) but wastes work. Acceptable for v1; a future micro-optimisation could cache resolution per `$instance`.
 4. **Race between `attachment` REST loading and `bindingResolvedId` check.** Client-side, the media-library record lookup via `useSelect` returns `undefined` while loading and `null` if resolved-not-found. The hook treats `undefined` as pending (bound-but-pending placeholder per §5.4 (1)) and `null` as unresolvable. There's a transient render where the cover shows the pending placeholder instead of the resolved image — duration is one network round-trip. Acceptable; pattern matches how `core/image` handles the same race.
-5. **AC-14 literal-DOM-absence vs functional-absence.** Design satisfies the *functional* AC-14 (media-replace not offered) by setting `onSelect` / `onToggleFeaturedImage` / `onReset` to `undefined`, leaving the `<MediaReplaceFlow>` toolbar wrapper in the DOM to host the embed `<MenuItem>` (AC-21). If reviewers insist on absolute absence of `<MediaReplaceFlow>`, the spec must be re-opened to reconcile AC-14 vs AC-21. Recommendation: assert on menu-item absence in the e2e test (§11.3), not on `<MediaReplaceFlow>` absence — matches the chosen design.
+5. **AC-14 surface — embed-video affordance trade-off.** The chosen design removes `<MediaReplaceFlow>` from the bound-cover toolbar entirely (literal-DOM-absence per AC-14), which has the side effect of removing the "Embed video from URL" `<MenuItem>` from bound covers. This is acceptable because: (a) embed-video covers force `bindingActive=false` per §5.1 step 2 — so the affordance remains accessible on the population AC-21 actually protects; (b) the Out-of-Scope "Embed-video × bindings interaction" bullet rules out the bound-non-embed-video → bound-embed-video conversion path. The user can unbind a Cover first, then use the embed-URL affordance. Documented in §5.5 and §2.2.
 6. **Backport-changelog entry timing.** `backport-changelog/7.1/<core-pr>.md` is created when the corresponding Core PR is filed; not a blocker for the Gutenberg PR landing. The Gutenberg PR description includes a `TODO: backport-changelog entry pending Core PR #NNN` note and is updated once the Core PR number is known.
