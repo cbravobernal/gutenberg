@@ -142,3 +142,73 @@ if ( ! function_exists( 'gutenberg_cover_bindings_is_active' ) ) {
 		return ! empty( $expanded['id'] ) && ! empty( $expanded['url'] ) && $same_source && $same_args;
 	}
 }
+
+if ( ! function_exists( 'gutenberg_cover_bindings_prepare_block' ) ) {
+	/**
+	 * Neutralises `useFeaturedImage` on Cover blocks whose `id`+`url` bindings
+	 * are active, before `WP_Block::render()` builds its instance attributes.
+	 *
+	 * Registered on the `render_block_data` filter, which fires inside
+	 * `render_block()` (see `wp-includes/blocks.php`) BEFORE `WP_Block` is
+	 * constructed for the parsed block. By forcing
+	 * `$parsed_block['attrs']['useFeaturedImage']` to `false` here when a
+	 * Cover-scoped binding is active, `render_block_core_cover` skips its
+	 * featured-image injection branch on the first render pass. This is the
+	 * AC-18 precedence rule: an active `id`+`url` binding always wins over
+	 * `useFeaturedImage`, with no double-`<img>` window.
+	 *
+	 * Gating order (each step short-circuits to "return unchanged"):
+	 *
+	 * 1. The block is not `core/cover`.
+	 * 2. `backgroundType === 'embed-video'` — embed-video covers are explicitly
+	 *    out of scope for the Cover-scoped binding path (AC-21); their existing
+	 *    `useFeaturedImage` semantics remain untouched.
+	 * 3. The bindings are not active per `gutenberg_cover_bindings_is_active()`
+	 *    (no `metadata.bindings`, mismatched source, or differing `args`).
+	 *
+	 * Only after all three gates pass — AND `useFeaturedImage` is currently
+	 * truthy — does the mutation run. When `useFeaturedImage` is already
+	 * falsy/absent, the array is returned unchanged.
+	 *
+	 * Persistence safety: the mutation is scoped to the in-flight
+	 * `$parsed_block` array used for this render pass only. PHP arrays are
+	 * value-copied on assignment, so the caller's array is not modified, and
+	 * the persisted `post_content` is never touched.
+	 *
+	 * @since 7.1.0
+	 *
+	 * @param array              $parsed_block The parsed block array, including
+	 *                                         `blockName` and `attrs` keys.
+	 * @param array              $source_block The original block as parsed (passed
+	 *                                         through unchanged).
+	 * @param WP_Block|null      $parent_block The parent block, if any (unused).
+	 * @return array The (possibly mutated) parsed block array.
+	 */
+	function gutenberg_cover_bindings_prepare_block( $parsed_block, $source_block, $parent_block ) {
+		if ( 'core/cover' !== ( $parsed_block['blockName'] ?? '' ) ) {
+			return $parsed_block;
+		}
+
+		$attrs = $parsed_block['attrs'] ?? array();
+
+		// AC-21: never engage for embed-video covers.
+		if ( ! empty( $attrs['backgroundType'] ) && 'embed-video' === $attrs['backgroundType'] ) {
+			return $parsed_block;
+		}
+
+		if ( ! gutenberg_cover_bindings_is_active( $attrs ) ) {
+			return $parsed_block;
+		}
+
+		// AC-18: an active binding wins over useFeaturedImage. Only mutate when
+		// there is something to flip, so the array is touched as little as
+		// possible.
+		if ( ! empty( $attrs['useFeaturedImage'] ) ) {
+			$parsed_block['attrs']['useFeaturedImage'] = false;
+		}
+
+		return $parsed_block;
+	}
+}
+
+add_filter( 'render_block_data', 'gutenberg_cover_bindings_prepare_block', 10, 3 );
