@@ -1,10 +1,10 @@
 # Design Doc: Cover block bindings — internal-only `id` and `url`
 
-Spec: `<artifacts>/1-spec/spec.md` (approved). All AC and DC references below resolve to that file.
+Spec: `<artifacts>/1-spec/spec.md` (approved). All AC, DC, Req references resolve to that file.
 
 ## 1. Overview
 
-`core/cover` ships Block Bindings support for `id` and `url` restricted to internal media-library attachments, headlined by Pattern Overrides. When a binding is active (post-`__default`-expansion: `id` AND `url` bound to the same source instance), the Edit component (a) hides parallax, repeat, media-replace and use-featured-image controls, (b) reactively derives `overlayColor`, `effectiveDimRatio`, `effectiveUrl` from the resolved `url` through a **single observer** wired via `useEffectEvent`, and (c) never mutates stored attributes on binding state transitions. The server (a Cover-scoped `render_block` filter in a new compat file) substitutes the bound `url` into the cover's `<img>`, rewrites `has-background-dim-100` to `has-background-dim-50` when the stored ratio is the default, and rebuilds the parallax/repeat `<div style="background-image:…">` into a plain `<img>` when bindings have resolved a value. Embed-video covers short-circuit both client and server binding paths.
+`core/cover` ships Block Bindings support for `id` and `url` restricted to internal media-library attachments, headlined by Pattern Overrides. When a binding is active (post-`__default`-expansion: `id` AND `url` bound to the same source instance), the Edit component (a) hides parallax, repeat, media-replace and use-featured-image controls in *every* render surface (toolbar, inspector, AND the empty-cover placeholder), (b) reactively derives `overlayColor`, `effectiveDimRatio`, `effectiveUrl` from the resolved `url` through a **single observer** wired via `useEffectEvent`, and (c) never mutates stored attributes on binding state transitions. The server (a single Cover-scoped file in `lib/compat/wordpress-7.1/block-bindings.php`) uses an early `render_block_data` filter to neutralise `useFeaturedImage` before `render_callback` runs, then a `render_block` priority-9 filter to substitute the bound URL into the cover's `<img>` (via pure `preg_match` byte-splice for the parallax/repeat case, `WP_HTML_Tag_Processor::set_attribute` for the plain-`<img>` case) and to remove `has-background-dim-100` from the overlay span when the stored ratio is the default. Embed-video covers short-circuit both client and server binding paths.
 
 ## 2. Architecture
 
@@ -22,40 +22,40 @@ Spec: `<artifacts>/1-spec/spec.md` (approved). All AC and DC references below re
        │ CLIENT  (packages/block-library/  │   │ SERVER (PHP)                     │
        │         src/cover/edit/index.js)  │   │                                  │
        ├───────────────────────────────────┤   ├──────────────────────────────────┤
-       │ useBindingState() hook (NEW)      │   │ render_block (priority 9)        │
+       │ useCoverBindingState() hook (NEW) │   │ render_block_data (priority 10)  │
        │   - expandedBindings              │   │   gutenberg_cover_bindings_      │
-       │   - bindingActive  (id+url, same  │   │     render_block( $content,      │
-       │       source instance)            │   │       $block, $instance )        │
-       │   - bindingResolvedUrl/Id (from   │   │     ↑ runs BEFORE                │
-       │       source.getValues via        │   │       gutenberg_block_bindings_  │
-       │       useSelect)                  │   │       render_block (priority 10) │
-       │   - bindingUnresolvable  (id      │   │                                  │
-       │       missing / mismatch / not    │   │   if bindingActive &&            │
-       │       attachment / external)     │   │      backgroundType !=='embed-   │
-       │                                   │   │      video':                     │
-       │ Effective values (derived, no    │   │     1. resolve url/id from       │
-       │   setAttributes):                 │   │        gutenberg_process_block_  │
-       │   - effectiveUrl = bindingResolvedUrl │      bindings()                  │
-       │       ?? (useFeaturedImage?       │   │     2. if id missing/not in      │
-       │             mediaUrl : originalUrl)   │        media library → strip     │
-       │   - effectiveDimRatio = (bindingActive│        <img>/<div bg> entirely;  │
-       │       && dimRatio===100 &&             │        early return             │
-       │       effectiveUrl) ? 50 : dimRatio    │     3. compute newDimRatio (50  │
-       │   - lockUrlControls = bindingActive   │        if 100 default && url)    │
-       │       && !canUserEditValue            │     4. rewrite cover via         │
-       │                                   │   │        WP_HTML_Tag_Processor:    │
-       │ Single observer (useEffect on    │   │          - swap <div bg-image>   │
-       │   effectiveUrl):                  │   │            ↳ rebuilt <img>      │
-       │   - getMediaColor(effectiveUrl)   │   │          - <img src=…> updated   │
-       │     ↳ setOverlayColor (if not    │   │          - drop has-parallax,    │
-       │        user-set)                  │   │            is-repeated classes   │
-       │   - propsRef guard + race-token  │   │          - swap has-background-  │
-       │     to prevent stale overwrites   │   │            dim-100 → -50         │
-       │                                   │   │     5. short-circuit            │
-       │ CoverInspectorControls / Block-  │   │        useFeaturedImage branch   │
-       │   Controls gated by               │   │                                  │
-       │   bindingActive + lockUrlControls │   │   else if embed-video:           │
-       └───────────────────────────────────┘   │     pass through unchanged       │
+       │   - bindingActive  (id+url, same  │   │     prepare_block( $parsed,      │
+       │       source instance)            │   │       $source, $parent )         │
+       │   - bindingResolvedUrl/Id (from   │   │     ↑ runs BEFORE render_call-   │
+       │       source.getValues via        │   │       back, mutates $parsed_     │
+       │       useSelect)                  │   │       block['attrs'] to set      │
+       │   - bindingUnresolvable  (id      │   │       useFeaturedImage=false     │
+       │       missing / mismatch / not    │   │       when bindingActive         │
+       │       attachment / external)      │   │                                  │
+       │                                   │   │ render_block (priority 9)        │
+       │ Effective values (derived, no     │   │   gutenberg_cover_bindings_      │
+       │   setAttributes):                 │   │     render_block( $content,      │
+       │   - effectiveUrl = bindingResolvedUrl │       $block, $instance )         │
+       │       ?? (useFeaturedImage?       │   │     ↑ runs BEFORE                │
+       │             mediaUrl : originalUrl) │       gutenberg_block_bindings_  │
+       │   - effectiveDimRatio = (bindingActive│       render_block (priority 10) │
+       │       && dimRatio===100 &&             │                                  │
+       │       effectiveUrl) ? 50 : dimRatio    │   if bindingActive &&            │
+       │   - lockUrlControls = bindingActive   │      backgroundType !=='embed-   │
+       │       && !canUserEditValue            │      video':                     │
+       │                                   │   │     1. resolve url/id from       │
+       │ Single observer (useEffect on     │   │        gutenberg_process_block_  │
+       │   effectiveUrl):                  │   │        bindings()                │
+       │   - getMediaColor(effectiveUrl)   │   │     2. if id missing/not in      │
+       │     ↳ setOverlayColor (if not     │   │        media library → strip     │
+       │        user-set)                  │   │        <img>/<div bg> entirely;  │
+       │   - propsRef guard + race-token   │   │        early return              │
+       │     to prevent stale overwrites   │   │     3. (A) rewrite img/div via   │
+       │                                   │   │            preg_replace_callback │
+       │ CoverInspectorControls / Block-   │   │            +Tag_Processor        │
+       │   Controls / CoverPlaceholder     │   │     4. (B) strip has-background- │
+       │   gated by bindingActive          │   │            dim-100 from overlay  │
+       └───────────────────────────────────┘   │            span                  │
                                                └──────────────────────────────────┘
 ```
 
@@ -64,31 +64,30 @@ Spec: `<artifacts>/1-spec/spec.md` (approved). All AC and DC references below re
 | File | Role | Change |
 | --- | --- | --- |
 | `packages/block-library/src/cover/block.json` | Attribute schema | Add `"role": "content"` to `id` (AC-1, AC-2 prerequisite) |
-| `lib/compat/wordpress-7.1/block-bindings.php` (NEW) | Server allow-list + Cover-scoped render filter | (a) `block_bindings_supported_attributes` filter adds `id`,`url` to `core/cover`; (b) `gutenberg_cover_bindings_render_block` filter on `render_block` priority 9 |
+| `lib/compat/wordpress-7.1/block-bindings.php` (NEW) | Server allow-list + Cover-scoped render filters | (a) `block_bindings_supported_attributes` filter adds `id`,`url` to `core/cover`; (b) `render_block_data` filter to neutralise `useFeaturedImage` before `render_callback`; (c) `gutenberg_cover_bindings_render_block` filter on `render_block` priority 9 |
 | `lib/load.php` | Bootstrap | `require __DIR__ . '/compat/wordpress-7.1/block-bindings.php';` in the REST-server block (alongside other 7.1 entries) |
-| `packages/block-library/src/cover/edit/index.js` | Reactive observer, derived values | New `useCoverBindingState` hook, replace existing `useEffect([mediaUrl])` with a single observer on `effectiveUrl`, propagate derived values to children |
+| `packages/block-library/src/cover/edit/index.js` | Reactive observer, derived values, render-tree gating | New `useCoverBindingState` hook, replace existing `useEffect([mediaUrl])` with a single observer on `effectiveUrl`, gate the empty-cover branch on `bindingActive || bindingUnresolvable`, render the `<Placeholder>` for the unresolvable case inline. |
 | `packages/block-library/src/cover/edit/inspector-controls.js` | UI gating | Gate parallax/repeat ToolsPanelItems on `! bindingActive` |
-| `packages/block-library/src/cover/edit/block-controls.js` | UI gating | Conditionally render `<MediaReplaceFlow>` based on `! bindingActive`; hide "Use featured image" toggle (passed through `useFeaturedImage` prop of `MediaReplaceFlow`) when bound |
-| `packages/block-library/src/cover/edit/cover-placeholder.js` | Unresolvable affordance | New "internal media required" Placeholder copy gated by `bindingUnresolvable` |
-| `phpunit/blocks/render-block-cover-test.php` | PHPUnit | New cases: bound-url → `<img src=$bound>`; default `dimRatio:100` + binding → `has-background-dim-50`; mismatched/unresolvable → no `<img>` |
+| `packages/block-library/src/cover/edit/block-controls.js` | UI gating | Pass `bindingActive` and gate the "Use featured image" toggle (set `onToggleFeaturedImage={ bindingActive ? undefined : toggleUseFeaturedImage }`) AND the media-replace `onSelect` (set `onSelect={ bindingActive ? undefined : onSelectMedia }`). The "Embed video from URL" `<MenuItem>` child of `<MediaReplaceFlow>` MUST remain unconditionally accessible (preserves AC-21 affordance). |
+| `phpunit/blocks/render-block-cover-test.php` | PHPUnit | New cases: bound-url → `<img src=$bound>`; default `dimRatio:100` + binding → `has-background-dim-50`; mismatched/unresolvable → no `<img>`; `useFeaturedImage:true + bindingActive` → exactly one `<img>` with bound URL |
 | `test/e2e/specs/editor/blocks/cover.spec.js` | E2E | New `describe('Block Bindings — Pattern Overrides')` block (AC-22..AC-24) |
-| `backport-changelog/7.1/<core-pr>.md` | Metadata | One-line entry when Core PR exists |
+| `backport-changelog/7.1/<core-pr>.md` | Metadata | Created at the same time the Core PR is filed; Gutenberg PR description includes a `TODO: backport-changelog entry pending Core PR` note and is updated once the Core PR number is known. Not a blocker for the Gutenberg PR landing. |
 
-No other Cover files change. No new `__experimental*` APIs are introduced. No `save.js`, `deprecated.js`, or block-list-renderer changes.
+No other Cover files change. **`cover-placeholder.js` is NOT touched** — the gating happens at the call sites in `index.js` (see §5.4 / §5.5). No new `__experimental*` APIs are introduced. No `save.js`, `deprecated.js`, or block-list-renderer changes.
 
 ## 3. Open Questions resolved
 
 ### OQ-1: Server-side approach — Cover-scoped filter (chosen)
 
-**Choice: Approach A — Cover-scoped `render_block` filter in `lib/compat/wordpress-7.1/block-bindings.php`.**
+**Choice: Approach A — Cover-scoped filters in `lib/compat/wordpress-7.1/block-bindings.php`.**
 
-Concretely: one `add_filter( 'render_block', 'gutenberg_cover_bindings_render_block', 9, 3 )` that gates on `$block['blockName'] === 'core/cover'` and exits the filter for every other block.
+Concretely: one `add_filter( 'render_block_data', ..., 10, 3 )` (Cover-only neutralisation of `useFeaturedImage` before `render_callback`) plus one `add_filter( 'render_block', 'gutenberg_cover_bindings_render_block', 9, 3 )` that gates on `$block['blockName'] === 'core/cover'`.
 
 **Rejected: Approach B (generic `block_bindings_attribute_replaced_in_markup` filter).**
 
 Reasoning:
 - Approach B (PR #74610) only solves `<img src>` substitution. It cannot rewrite the parallax/repeat `<div style="background-image:…">` markup (HTML API has no CSS-in-`style` mutation; AC-19, Risk 5) and cannot rewrite the `has-background-dim-100` class to a non-opaque variant (AC-16). Approach B therefore still needs a Cover-scoped supplementary path — at which point Approach A is strictly simpler.
-- Approach B introduces a new global filter (`block_bindings_attribute_replaced_in_markup`) which the spec OQ flags as needing weighing. Approach A introduces zero new global APIs (Req 28, AC-out-of-scope on global APIs).
+- Approach B introduces a new global filter (`block_bindings_attribute_replaced_in_markup`) which the spec OQ flags as needing weighing. Approach A introduces zero new global APIs (Req 28, Out-of-Scope on global APIs).
 - Cover-scoped means zero risk of changing behaviour for any other block (Req 21). The generic-filter approach has cross-block reuse value, but no other block currently needs it; cost > benefit.
 - Approach A keeps the entire substitution surface in one file (the new 7.1 compat file). Easier to review, easier to delete when Core absorbs the change.
 
@@ -99,55 +98,70 @@ Reasoning:
 **Choice: keep existing `ResetOverridesControl` semantics: button is **disabled** (not removed from DOM) when the instance value matches the pattern default.**
 
 Reasoning:
-- Cover-specific code zero. Pattern Overrides controls are wired by `withPatternOverrideControls` in `packages/editor/src/hooks/pattern-overrides.js`; the toolbar `ResetOverridesControl` (line 84 of `packages/patterns/src/components/reset-overrides-control.js`) already renders `disabled={ ! isOverridden }`.
-- Consistent with every other bindable block (paragraph, heading, image, button) — diverging would be a UX regression.
+- Cover-specific code zero. Pattern Overrides controls are wired by `withPatternOverrideControls` in `packages/editor/src/hooks/pattern-overrides.js`; the toolbar `ResetOverridesControl` (`packages/patterns/src/components/reset-overrides-control.js`) already renders `disabled={ ! isOverridden }`.
+- Consistent with every other bindable block (paragraph, heading, image, button).
 - Test-observability (AC-10) is preserved: e2e asserts `await expect( resetButton ).toBeDisabled()` rather than absence-from-DOM.
 
 **Traces to:** AC-10, Req 24(d).
 
-### OQ-3: Saved-markup parallax/repeat rewrite mechanism — bookmark-bounded substring replacement (chosen)
+### OQ-3: Saved-markup parallax/repeat rewrite mechanism — `preg_match` byte splice + `WP_HTML_Tag_Processor` (chosen)
 
-**Choice: Mechanism (i) — detect the parallax/repeat case in the new Cover render filter and replace the entire `<div class="wp-block-cover__image-background" style="background-image:url(…)">` fragment in `$content` with a rebuilt `<img>` HTML string, using `WP_HTML_Tag_Processor` to locate the element and Tag-Processor bookmarks (via the source-text byte positions exposed through `get_token_byte_offset_in_source_text`/`get_token_length_in_source_text` on `WP_HTML_Processor::create_fragment`) to compute the substring range to splice.**
+**Choice: Mechanism (i) — detect the parallax/repeat case in the new Cover render filter and replace the entire `<div class="wp-block-cover__image-background" style="background-image:url(…)">` fragment in `$content` with a rebuilt `<img>` HTML string, located via `preg_match( … , PREG_OFFSET_CAPTURE )` (the exact same pattern shape that `render_block_core_cover` already uses at `packages/block-library/src/cover/index.php:117-125, 193-197`).**
 
-If the saved markup is already the non-parallax/repeat form (plain `<img>`), the filter takes the simpler path: locate `<img class="wp-block-cover__image-background">` and `set_attribute( 'src', $resolved_url )` in place — no fragment splice needed.
+**Why not the previously-cited byte-offset Tag-Processor helpers.** The prior design draft cited `WP_HTML_Tag_Processor::get_token_byte_offset_in_source_text()` and `get_full_token_length()` as public accessors. Verified at `/Users/carlos/.wp-env/cc4ba7b5738d99b49b19f399987f6e49/WordPress/wp-includes/html-api/class-wp-html-tag-processor.php` — neither method exists. The class's public surface (lines 836–4797) exposes `next_tag`, `set_attribute`, `add_class`, `remove_class`, `set_bookmark`, `seek`, `get_updated_html`, `has_class`, `class_list`, `get_attribute`, `get_token_name`, `get_token_type`, `is_tag_closer`, `has_self_closing_flag`, `get_modifiable_text`, `set_modifiable_text`, `paused_at_incomplete_token`, etc., but `$token_starts_at` (line 609) and `$token_length` (line 628) are declared `private`. Token positions are not exposed by the public API. `set_bookmark` / `seek` allow movement to a previously-visited tag but do not yield substring ranges either. Therefore byte-offset splicing through Tag-Processor private accessors is not a viable mechanism.
 
-Rejected: Mechanism (ii) "bypass saved markup entirely and synthesise the full `<img>` server-side from resolved `url`/`id`". Reasoning: it re-implements the entire cover markup server-side (classes, alt, focal-point `data-object-position`, `wp-image-{id}`, size slug), duplicating `save.js` logic. Risk of drift between client save and server output is real and would surface as classname diffs on subsequent re-edits. Mechanism (i) preserves the saved markup as the source of truth for everything that is not the URL/class/element-tag.
+**Why not pure `WP_HTML_Tag_Processor` mutation.** The Tag Processor cannot rewrite a `<div>` element into an `<img>` element (no `set_tag()` operation in its public API; verified). It also cannot edit a CSS value inside `style="background-image: url(…)"` (Risk 5). For the parallax/repeat saved form, neither of those is feasible.
 
-**Concrete shape (pseudo-PHP, mechanism (i)):**
+**Why not `DOMDocument` for the whole markup.** `DOMDocument::loadHTML` aggressively normalises HTML (wrapping in `<html>/<body>`, expanding void elements, decoding entities), risking observable byte-level diffs versus saved markup for unrelated content (AC-20 non-regression). Round-tripping through `saveHTML` is known-lossy for `class="..."` / `style="..."` attribute ordering and self-closing-slash form. Out of proportion for the small, surgical edit we need.
+
+**Why not "synthesise the full `<img>` from scratch and discard saved markup".** Re-implementing `save.js`'s output (classes including `wp-image-{id} size-{slug}`, `data-object-position`, alt, focal-point style) duplicates client logic. Risk of drift between client save and server output is real and would surface as classname diffs on subsequent re-edits (round-trip / AC-20 hazard).
+
+**Concrete shape — parallax/repeat saved form (mechanism (i)):**
 
 ```php
-// $content is the saved Cover markup.
-$processor = new WP_HTML_Tag_Processor( $content );
-if ( $processor->next_tag( array(
-    'tag_name'   => 'DIV',
-    'class_name' => 'wp-block-cover__image-background',
-) ) ) {
-    // Parallax/repeat saved form. Compute byte range via the
-    // processor's reported source position; splice in a rebuilt <img>.
-    $start  = $processor->get_token_byte_offset_in_source_text();
-    $length = $processor->get_full_token_length(); // div opener + content + closer
+// Pattern mirrors the one already used at packages/block-library/src/cover/index.php:117-125
+// for the figure.wp-block-embed case.
+$div_pattern = '/<div\s+[^>]*\bwp-block-cover__image-background\b[^>]*><\/div>/U';
+if ( 1 === preg_match( $div_pattern, $content, $matches, PREG_OFFSET_CAPTURE ) ) {
+    $div_start  = $matches[0][1];
+    $div_length = strlen( $matches[0][0] );
+    // Build the replacement <img>. wp-image-{id}, size-{slug}, alt, optional object-position
+    // come from the bound attachment metadata + the cover's saved $attrs.
     $rebuilt_img = sprintf(
-        '<img class="wp-block-cover__image-background%s" alt="%s" src="%s" data-object-fit="cover"%s />',
-        $size_class,           // " wp-image-{$id} size-{$slug}"
+        '<img class="wp-block-cover__image-background wp-image-%d%s" alt="%s" src="%s" data-object-fit="cover"%s />',
+        (int) $resolved_id,
+        $size_class_suffix,     // e.g. ' size-large' or ''
         esc_attr( $alt ),
         esc_url( $resolved_url ),
-        $object_position_attrs // optional data-object-position + style
+        $object_position_attrs  // ' data-object-position="50% 50%" style="object-position:50% 50%;"' or ''
     );
-    $content = substr( $content, 0, $start ) . $rebuilt_img . substr( $content, $start + $length );
-} else {
-    // Plain <img> saved form: substitute src in place.
-    $processor = new WP_HTML_Tag_Processor( $content );
-    if ( $processor->next_tag( array(
-        'tag_name'   => 'IMG',
-        'class_name' => 'wp-block-cover__image-background',
-    ) ) ) {
-        $processor->set_attribute( 'src', $resolved_url );
-        $content = $processor->get_updated_html();
-    }
+    $content = substr( $content, 0, $div_start ) . $rebuilt_img . substr( $content, $div_start + $div_length );
 }
 ```
 
-(`WP_HTML_Tag_Processor::get_token_byte_offset_in_source_text`/`get_full_token_length` are public; if a particular WP version lacks the closer-aware helper, fall back to `preg_match` on `/<div\s+[^>]*\bwp-block-cover__image-background\b[^>]*>\s*<\/div>/is` — the same pattern `render_block_core_cover` already uses on lines 117–125 of `packages/block-library/src/cover/index.php` for the embed-figure case.)
+**Concrete shape — plain `<img>` saved form (no parallax/repeat at save time):**
+
+```php
+$processor = new WP_HTML_Tag_Processor( $content );
+if ( $processor->next_tag( array(
+    'tag_name'   => 'IMG',
+    'class_name' => 'wp-block-cover__image-background',
+) ) ) {
+    $processor->set_attribute( 'src', $resolved_url );
+    $processor->set_attribute( 'alt', $alt );
+    // Substitute wp-image-{old} → wp-image-{new}: scan classes and rewrite.
+    // class_list() iterates current classes; remove_class + add_class are public.
+    foreach ( $processor->class_list() as $cls ) {
+        if ( 0 === strpos( $cls, 'wp-image-' ) ) {
+            $processor->remove_class( $cls );
+        }
+    }
+    $processor->add_class( 'wp-image-' . (int) $resolved_id );
+    $content = $processor->get_updated_html();
+}
+```
+
+Both methods used (`set_attribute`, `class_list`, `remove_class`, `add_class`, `next_tag`, `get_updated_html`) are confirmed public methods in `WP_HTML_Tag_Processor` (lines 1181, 4310, 4539, 4581, 887, 4637 respectively of `wp-includes/html-api/class-wp-html-tag-processor.php`).
 
 **Traces to:** AC-19, Risk 5, OQ-3 spec text.
 
@@ -156,8 +170,8 @@ if ( $processor->next_tag( array(
 **Choice: 50.**
 
 Reasoning:
-- Exact symmetry with the existing `onSelectMedia` event-handler downshift (`packages/block-library/src/cover/edit/index.js:244-247`: `currentAttrs.url === undefined && currentAttrs.dimRatio === 100 ? 50 : ...`). Same user-visible outcome whether the URL arrived via media selection or via a binding — the spec's source-agnostic invariant (DC-3) becomes self-enforcing.
-- `dimRatioToClass( 50 ) === null` (see `packages/block-library/src/cover/shared.js:32-36`), so the overlay span emits `has-background-dim` without any `has-background-dim-N` modifier — i.e. the CSS default of 50% opacity. The class-rewrite on the server is therefore "remove `has-background-dim-100`", not "replace it with `has-background-dim-50`", which is mechanically simpler.
+- Exact symmetry with the existing `onSelectMedia` event-handler downshift (`packages/block-library/src/cover/edit/index.js`: `currentAttrs.url === undefined && currentAttrs.dimRatio === 100 ? 50 : ...`). Same user-visible outcome whether the URL arrived via media selection or via a binding — the spec's source-agnostic invariant (DC-3) becomes self-enforcing.
+- `dimRatioToClass( 50 ) === null` (see `packages/block-library/src/cover/shared.js`), so the overlay span emits `has-background-dim` without any `has-background-dim-N` modifier — i.e. the CSS default of 50% opacity. The class-rewrite on the server is therefore "remove `has-background-dim-100`", not "replace it with `has-background-dim-50`", which is mechanically simpler.
 
 **Traces to:** AC-15, AC-16, Req 14, Req 18.
 
@@ -168,17 +182,23 @@ Reasoning:
 Reasoning:
 - DC-2 / Req 11 prohibit attribute mutation from binding-state changes. A migration would be exactly that, just on save-load instead of in an effect — same invariant violation.
 - A deprecation chain change for what is essentially a render-time concern would force `deprecated.js` work and risks breaking saved unbound covers (AC-20 non-regression).
-- The render-time path already has to strip `has-parallax`/`is-repeated` classes from the rebuilt `<img>` (see OQ-3 sketch) and the editor preview's `<img>` element is unconditional once `effectiveUrl` resolves (the existing `isImgElement = !(hasParallax || isRepeated)` check is bypassed in the bound-cover render branch — see §5.4). Force-off therefore comes free.
-
-The "error" alternative was rejected: silently breaking a saved cover on load with no migration path would surprise pattern authors. Force-off + UI hide gives a clean transition where the parallax simply stops applying when the cover becomes a Pattern Overrides target — and resumes if the binding is removed.
+- The render-time path already has to strip `has-parallax`/`is-repeated` classes by construction from the rebuilt `<img>` (see OQ-3); the editor preview's `<img>` element is rendered unconditionally once `effectiveUrl` resolves AND `bindingActive` (the existing `isImgElement = !(hasParallax || isRepeated)` check is bypassed in the bound-cover render branch — see §5.4). Force-off therefore comes free.
 
 **Traces to:** Req 11, DC-2, AC-19, AC-20.
 
-### OQ-6 (newly identified): Test-observable signal for the "internal media required" affordance
+### OQ-6: Test-observable signal for the "internal media required" affordance
 
-**Choice: a `<Placeholder>` with a stable `data-testid="cover-binding-unresolvable"` attribute AND the i18n string `__( 'Internal media required for this binding.' )`.**
+**Choice: primary contract is the i18n message string `__( 'Internal media required for this binding.' )`. Secondary stability hook is `data-testid="cover-binding-unresolvable"`.**
 
-The e2e test (AC-24) locates by `data-testid` for stability across translations. The string is also a stable contract — adding it to the requirements vocabulary.
+**E2E assertion uses the i18n string** (per spec Req 16: "a known i18n message string … accessible to the e2e test"):
+
+```js
+await expect(
+    page.getByText( 'Internal media required for this binding.' )
+).toBeVisible();
+```
+
+The `data-testid` attribute is added to the `<Placeholder>` element as a translation-resistant fallback hook. It is **secondary**: the e2e test does not assert on it. Code review may legitimately challenge `data-testid` on production DOM; if removed, AC-24 remains satisfied by the i18n-string locator. The design's intent (versus a hard "must remove `data-testid` if reviewer objects" position) is: keep `data-testid` for cross-locale stability but accept its removal during review if challenged — the i18n-string contract is the load-bearing one.
 
 **Traces to:** Req 16, AC-4, AC-24.
 
@@ -200,13 +220,13 @@ Preempted by **render-time `effectiveDimRatio = (bindingActive && dimRatio === 1
 
 Preempted by an **explicit `backgroundType === 'embed-video'` short-circuit at both client and server**:
 - Client: `useCoverBindingState` returns `bindingActive: false` when `backgroundType === 'embed-video'`, regardless of `metadata.bindings`. Derivations short-circuit; the existing oEmbed path runs as today (AC-21).
-- Server: `gutenberg_cover_bindings_render_block` early-returns `$content` unchanged when `! empty( $attributes['backgroundType'] ) && 'embed-video' === $attributes['backgroundType']`. The existing `render_block_core_cover`'s embed-video branch (lines 18–131 of `packages/block-library/src/cover/index.php`) runs unmodified.
+- Server: both the `render_block_data` filter and `gutenberg_cover_bindings_render_block` early-return when `! empty( $attributes['backgroundType'] ) && 'embed-video' === $attributes['backgroundType']`. The existing `render_block_core_cover`'s embed-video branch (lines 18–131 of `packages/block-library/src/cover/index.php`) runs unmodified.
 
 Bindings UI rows for `url`/`id` still appear (allowed by Req 27 / AC-21) but have no runtime effect on embed-video covers.
 
 ### Risk 5 — HTML API can't edit CSS-in-`style`
 
-Preempted by **OQ-3 mechanism (i)**: never attempt to edit the CSS value inside `style="background-image: url(…)"`. Instead, locate the `<div class="wp-block-cover__image-background">` and **replace the entire element** with a rebuilt `<img>`. The substitution is a substring splice keyed by HTML-Tag-Processor byte offsets — no CSS parsing involved.
+Preempted by **OQ-3 mechanism (i)**: never attempt to edit the CSS value inside `style="background-image: url(…)"`. Instead, locate the `<div class="wp-block-cover__image-background">` and **replace the entire element** with a rebuilt `<img>` via `preg_match` + `substr` splice — no CSS parsing involved, no Tag-Processor private accessors required.
 
 ## 5. Client-side design
 
@@ -221,7 +241,7 @@ Exported shape:
  * @typedef {Object} CoverBindingState
  * @property {boolean}            bindingActive          true iff (after __default expansion) `id` AND `url` are bound to the same source instance AND backgroundType !== 'embed-video'.
  * @property {boolean}            bindingUnresolvable    true iff metadata.bindings has any cover-binding configuration that does not satisfy bindingActive (mismatched source, only one of id/url, external URL, id not resolvable as attachment).
- * @property {string|undefined}   bindingResolvedUrl     URL resolved from the bound source via useSelect( … getBlockBindingsSource(...).getValues ).
+ * @property {string|undefined}   bindingResolvedUrl     URL resolved from the bound source via useSelect.
  * @property {number|undefined}   bindingResolvedId      ID resolved from the bound source.
  * @property {boolean}            canUserEditBindingValue Source.canUserEditValue() result; gates lockUrlControls.
  */
@@ -229,19 +249,52 @@ export default function useCoverBindingState( { clientId, attributes, context } 
 ```
 
 Implementation outline:
-1. Expand `attributes.metadata?.bindings` via `replacePatternOverridesDefaultBinding( bindings, [ 'id', 'url' ] )` from `packages/block-editor/src/utils/block-bindings.js`. Use `[ 'id', 'url' ]` as the supportedAttributes argument.
+1. Expand `attributes.metadata?.bindings` via `replacePatternOverridesDefaultBinding( bindings, [ 'id', 'url' ] )` from `packages/block-editor/src/utils/block-bindings.js`.
 2. `bindingActive = expanded?.id && expanded?.url && expanded.id.source === expanded.url.source && JSON.stringify(expanded.id.args ?? null) === JSON.stringify(expanded.url.args ?? null) && backgroundType !== 'embed-video'`.
-3. Resolve values via `useSelect`: for each `attr` in `[ 'id', 'url' ]`, look up `getBlockBindingsSource( expanded[attr].source ).getValues({ select, clientId, context, bindings: { [attr]: expanded[attr] } })[ attr ]`. The Pattern Overrides source returns the block's own attribute when no override is set (see `packages/editor/src/bindings/pattern-overrides.js:13-36`), so the "default state" naturally resolves to the block's pattern-default attribute value.
-4. Sanity-check `bindingResolvedId` against the media library via `select( coreStore ).getEntityRecord( 'postType', 'attachment', bindingResolvedId, { context: 'view' } )` — if the record is `undefined` (still loading) treat as pending; if `null` (resolved, not found) treat as unresolvable.
-5. `bindingUnresolvable = (hasAnyCoverBinding) && ! bindingActive` OR `bindingActive && bindingResolvedId resolves to null`.
+3. Resolve values via **a single `useSelect`** that reads both the bound URL and ID and the attachment record in one closure, deduplicating subscription work:
+
+   ```js
+   const { bindingResolvedUrl, bindingResolvedId, bindingResolvedAttachment } =
+       useSelect( ( select ) => {
+           if ( ! bindingActive ) {
+               return { bindingResolvedUrl: undefined, bindingResolvedId: undefined, bindingResolvedAttachment: undefined };
+           }
+           const source = unlock( select( blockEditorStore ) ).getBlockBindingsSource( expanded.url.source );
+           if ( ! source ) {
+               return { bindingResolvedUrl: undefined, bindingResolvedId: undefined, bindingResolvedAttachment: undefined };
+           }
+           const values = source.getValues( {
+               select,
+               clientId,
+               context,
+               bindings: { id: expanded.id, url: expanded.url },
+           } );
+           const url = values?.url;
+           const id = values?.id;
+           const attachment = id
+               ? select( coreStore ).getEntityRecord( 'postType', 'attachment', id, { context: 'view' } )
+               : undefined;
+           return { bindingResolvedUrl: url, bindingResolvedId: id, bindingResolvedAttachment: attachment };
+       }, [ bindingActive, expanded?.id?.source, expanded?.url?.source, clientId ] );
+   ```
+
+   Notes on performance and correctness:
+   - **Single `useSelect`**: dedupes the subscription. Reading the attachment record in the same closure means the subscription re-fires only when *any* of the closure's reads change, not on every render.
+   - **`undefined` vs `null`**: `getEntityRecord` returns `undefined` while loading (resolution not yet started/resolved), `null` once resolved and not found. The hook treats `undefined` as pending (no unresolvable affordance yet) and `null` as definitively unresolvable. This matches `core/image`'s pattern.
+   - **Pattern Overrides scale**: for N bound Covers on the same post, each instance fires its own `useSelect`, but the `getEntityRecord` selector is memoised by `core-data` (same `( 'postType', 'attachment', id )` key dedupes across consumers). Acceptable for v1; if profiling later reveals churn, the hook can be promoted to a parent-context provider.
+
+4. `bindingUnresolvable = (hasAnyCoverBinding) && ! bindingActive` OR `bindingActive && bindingResolvedAttachment === null` (resolved-not-found) OR `bindingActive && bindingResolvedAttachment && bindingResolvedAttachment.type !== 'attachment'`.
 
 The hook returns plain values; the consumer (`CoverEdit`) destructures them.
 
 ### 5.2 Single observer (in `CoverEdit`)
 
-Replaces the existing `useEffect( [ mediaUrl ] )` block (`packages/block-library/src/cover/edit/index.js:163-201`). Source-agnostic per DC-3:
+Replaces the existing `useEffect( [ mediaUrl ] )` block in `packages/block-library/src/cover/edit/index.js`. Source-agnostic per DC-3:
 
 ```js
+// Declared once at the top of the component body, before any useEffect.
+const raceTokenRef = useRef( 0 );
+
 // Derived: the URL the editor should display.
 const effectiveUrl =
     bindingResolvedUrl ??
@@ -251,12 +304,12 @@ const effectiveUrl =
 const effectiveDimRatio =
     bindingActive && dimRatio === 100 && effectiveUrl ? 50 : dimRatio;
 
-// Latest non-tracked reads via useEffectEvent (eliminates stale closure pitfalls).
+// useEffectEvent reads latest non-tracked values without dep-array churn.
 const onUrlResolved = useEffectEvent( async ( resolvedUrl ) => {
     if ( ! resolvedUrl ) return;
-    const raceToken = ++raceTokenRef.current;
+    const myToken = ++raceTokenRef.current;
     const avg = await getMediaColor( resolvedUrl );
-    if ( raceToken !== raceTokenRef.current ) return; // stale
+    if ( myToken !== raceTokenRef.current ) return; // stale resolution; bail
 
     const { attributes: latestAttrs, overlayColor: latestOverlay } = propsRef.current;
     if ( ! latestAttrs.isUserOverlayColor ) {
@@ -277,32 +330,70 @@ useEffect( () => {
 }, [ effectiveUrl, onUrlResolved ] );
 ```
 
-Key properties:
+Key properties and design rationale:
 - **One** `useEffect`, keyed on `effectiveUrl`. The dependency array has stable references for everything else (DC-1).
-- `useEffectEvent` (`@wordpress/element`, confirmed at `packages/element/build-module/react.mjs:23,97`) reads latest `attributes`, `overlayColor` without dep-array churn.
-- A monotonically-increasing `raceTokenRef` (Req 13) prevents an older `getMediaColor` resolution from overwriting a newer one. Replaces the existing `propsRef`-only guard for the same purpose.
+- `useEffectEvent` (`@wordpress/element`, confirmed at `packages/element/build-module/react.mjs`) reads latest `attributes`, `overlayColor` without dep-array churn.
+- **Race token via ref, NOT cleanup flag.** The `useEffectEvent` callback is invoked freshly on every dependency change, but `useEffectEvent`'s identity is stable across renders. A `useEffect` cleanup-flag pattern (`let cancelled = false; … return () => { cancelled = true; };`) would require co-locating the cleanup inside the `useEffect` body — but the async work lives inside `useEffectEvent` (so latest props/state are read). Hoisting the flag out of `useEffectEvent` defeats the latest-value guarantee. The ref-based race token is the simplest pattern that survives both async resolution ordering AND `useEffectEvent`'s "latest reads" contract. **The `raceTokenRef = useRef( 0 )` declaration is explicit (declared at component top, before observer);** implementers reading the sketch verbatim will not encounter an undeclared identifier.
 - `setAttributes` is called only for `isDark`, which is **not** in DC-2's prohibition list. The DC-2 list is `dimRatio`, `useFeaturedImage`, `backgroundType`, `id`, `url`, `hasParallax`, `isRepeated`, `overlayColor`, `customOverlayColor`.
 
 ### 5.3 Existing event handlers — unchanged
 
 `onSelectMedia`, `onClearMedia`, `onSetOverlayColor`, `onUpdateDimRatio`, `toggleUseFeaturedImage`, `onSelectEmbedUrl` keep their current shapes. They already mutate stored attributes in response to **user intent** events (not binding state). DC-2 prohibits mutation triggered by binding state changes, not user-initiated mutations.
 
-There is one nuance: the existing observer at lines 163–201 has a side-effect on `isDark`/`isUserOverlayColor`. The replacement observer above also writes `isDark`; `isUserOverlayColor` is left alone unless an event handler sets it.
+There is one nuance: the existing observer has a side-effect on `isDark`/`isUserOverlayColor`. The replacement observer above also writes `isDark`; `isUserOverlayColor` is left alone unless an event handler sets it.
 
 ### 5.4 Render-tree changes in `CoverEdit`
 
-Around the existing image rendering (lines 672–693):
+Two structural changes to `packages/block-library/src/cover/edit/index.js`:
+
+**(1) Empty-cover branch (currently `if ( ! useFeaturedImage && ! hasInnerBlocks && ! hasBackground )` at index.js line 599):** add `bindingActive || bindingUnresolvable` to the predicate so the standard `<CoverPlaceholder>` (which exposes upload + featured-image toggle affordances) NEVER renders on a bound cover. Replace with a binding-aware placeholder branch:
 
 ```jsx
-{ bindingUnresolvable && (
-    <Placeholder
-        data-testid="cover-binding-unresolvable"
-        className="wp-block-cover__binding-unresolvable"
-        instructions={ __( 'Internal media required for this binding.' ) }
-        withIllustration
-    />
-) }
+if ( ! useFeaturedImage && ! hasInnerBlocks && ! hasBackground ) {
+    if ( bindingActive || bindingUnresolvable ) {
+        return (
+            <>
+                { blockControls }
+                { inspectorControls }
+                { hasNonContentControls && isSelected && (
+                    <ResizableCoverPopover { ...resizableCoverProps } />
+                ) }
+                <TagName
+                    { ...blockProps }
+                    className={ clsx( 'is-placeholder', blockProps.className ) }
+                    style={ { ...blockProps.style, minHeight: minHeightWithUnit || undefined } }
+                >
+                    { resizeListener }
+                    { bindingUnresolvable ? (
+                        <Placeholder
+                            data-testid="cover-binding-unresolvable"
+                            className="wp-block-cover__binding-unresolvable"
+                            withIllustration
+                            instructions={ __( 'Internal media required for this binding.' ) }
+                        />
+                    ) : (
+                        /* bindingActive but pending resolution; render an empty placeholder
+                           with no affordances. The single observer will populate the cover
+                           once effectiveUrl arrives. */
+                        <Placeholder
+                            className="wp-block-cover__binding-pending"
+                            withIllustration
+                        />
+                    ) }
+                </TagName>
+            </>
+        );
+    }
+    /* Existing CoverPlaceholder branch (unbound case) — unchanged. */
+    return ( /* … existing return with <CoverPlaceholder> … */ );
+}
+```
 
+The standard `<CoverPlaceholder>` continues to render in the unbound empty-cover branch and (lower in the component, line 750) inside the `<TagName>` with `disableMediaButtons`. **That second `<CoverPlaceholder>` (line 750) is also reached on bound covers** (when `hasBackground` is true), but it is rendered with `disableMediaButtons` — `<MediaPlaceholder>`'s `disableMediaButtons` prop hides the upload-via-DropZone and featured-image affordances. (Verified in `@wordpress/block-editor`'s `MediaPlaceholder`: `disableMediaButtons` short-circuits the upload-zone and gallery-toggle rendering.) Therefore no additional gating is required at that site.
+
+**(2) Non-empty render branch (around `url && isImageBackground` at index.js line 672):**
+
+```jsx
 { ! bindingUnresolvable && effectiveUrl && isImageBackground && (
     bindingActive ? (
         // Force-img form: bindings override parallax/repeat
@@ -334,17 +425,47 @@ And the overlay span class computation uses `effectiveDimRatio` rather than `dim
 
 ### 5.5 Control gating
 
-`inspector-controls.js` (lines 223–260) — wrap the `<>` fragment containing the "Fixed background" and "Repeated background" `ToolsPanelItem`s in `! bindingActive && …`. Pass `bindingActive` as a new prop from `CoverEdit`.
+**`inspector-controls.js`** — wrap the `<>` fragment containing the "Fixed background" and "Repeated background" `ToolsPanelItem`s in `! bindingActive && …`. Pass `bindingActive` as a new prop from `CoverEdit`.
 
-`block-controls.js` (lines 111–135) — wrap the entire `<MediaReplaceFlow>` (which carries both the replace UI and the `useFeaturedImage` toggle via `onToggleFeaturedImage` + `useFeaturedImage` prop) in `! bindingActive && …`. Per AC-14, media-replace is hidden on **any** active binding including Pattern Overrides. Pattern Overrides authors edit the override via the pattern instance's outer media-replace pathway, not from within the cover.
+**`block-controls.js`** — the `<MediaReplaceFlow>` element MUST remain rendered in both bound and unbound states, because the "Embed video from URL" `<MenuItem>` is its child and AC-21 requires that affordance to remain accessible on embed-video covers regardless of binding presence. Gating is done at the **prop level**, not by removing the `<MediaReplaceFlow>` wrapper:
 
-Per Req 7 + AC-14: media-replace hides on bindingActive regardless of `canUserEditValue`. (The `canUserEditValue` distinction surfaces in `lockUrlControls`, which is still computed but currently only gates the Block Bindings panel's own per-attribute UI — not Cover's controls.)
+```jsx
+<MediaReplaceFlow
+    mediaId={ id }
+    mediaURL={ url }
+    allowedTypes={ ALLOWED_MEDIA_TYPES }
+    onSelect={ bindingActive ? undefined : onSelectMedia }
+    onToggleFeaturedImage={ bindingActive ? undefined : toggleUseFeaturedImage }
+    useFeaturedImage={ bindingActive ? undefined : useFeaturedImage }
+    name={ ! url ? __( 'Add media' ) : __( 'Replace' ) }
+    onReset={ bindingActive ? undefined : onClearMedia }
+    variant="toolbar"
+>
+    { ( { onClose } ) => (
+        <MenuItem
+            icon={ link }
+            onClick={ () => {
+                setIsEmbedUrlInputOpen( true );
+                onClose();
+            } }
+        >
+            { __( 'Embed video from URL' ) }
+        </MenuItem>
+    ) }
+</MediaReplaceFlow>
+```
 
-The "Use featured image" toggle is rendered by `<MediaReplaceFlow>` (`onToggleFeaturedImage` + `useFeaturedImage` props at `block-controls.js:117-118`); hiding `<MediaReplaceFlow>` hides the toggle automatically (AC-13). The inspector-controls surface does NOT separately render a use-featured-image toggle, so no second-site gating is needed.
+`MediaReplaceFlow` (verified at `packages/block-editor/src/components/media-replace-flow/`) renders the "Use featured image" toggle ONLY when `onToggleFeaturedImage` is a function; setting it to `undefined` removes that menu item from the dropdown. Same for `onSelect` (the upload + media-library buttons short-circuit when `onSelect` is falsy). `onReset` undefined removes the "Reset" menu item. The "Embed video from URL" `<MenuItem>` child is unaffected — it is rendered through `MediaReplaceFlow`'s `children` prop and surfaces unconditionally inside the dropdown. AC-13, AC-14 satisfied without hiding the embed affordance (AC-21 preserved).
+
+**Verification of AC-14 surface coverage.** AC-14 requires the media-replace control to be NOT in the DOM. The `<MediaReplaceFlow>` toolbar button remains in the DOM under the gating above (because it still hosts the embed `<MenuItem>`); the dropdown's media-replace and use-featured-image menu items are gone. **This is a minor stretch of the AC-14 literal wording.** AC-14's intent (Req 7) is that direct media replacement from inside the Cover is not offered when bound. Setting `onSelect` / `onToggleFeaturedImage` / `onReset` to `undefined` removes the media-replace and featured-image menu items from the dropdown. The remaining `<MediaReplaceFlow>` toolbar button surfaces only the "Embed video from URL" affordance, which is explicitly preserved by AC-21. The e2e test (§11.3) asserts on the absence of the media-replace and featured-image **menu items**, not on the absence of the `<MediaReplaceFlow>` toolbar button. **If reviewers insist on absolute absence of `<MediaReplaceFlow>` from the DOM**, the spec must be re-opened to reconcile AC-14 vs AC-21; the design's current reading prioritises AC-21's explicit "no observable runtime effect under this PR" against AC-14's literal DOM-absence wording, because AC-21 is the more specific contract for the embed-video case.
+
+**`cover-placeholder.js` itself is not modified.** Its sole call sites are in `index.js` (lines 616 and 750). The line-616 site is now unreachable under `bindingActive || bindingUnresolvable` (replaced by the binding-aware placeholder branch in §5.4 (1)). The line-750 site is reached on bound covers but uses `disableMediaButtons`, which removes both the upload and the featured-image affordance from `<MediaPlaceholder>`. AC-13, AC-14, Req 7 satisfied without editing `cover-placeholder.js`.
+
+**`<MediaReplaceFlow>` "Use featured image" toggle** is gated by setting `onToggleFeaturedImage` to `undefined` (above). AC-13 satisfied. **Inspector-controls.js does NOT separately render a use-featured-image toggle**, verified by inspection — there is no second inspector site.
 
 ### 5.6 Pattern Overrides integration
 
-Zero Cover-specific code. `withPatternOverrideControls` in `packages/editor/src/hooks/pattern-overrides.js` reads `__experimentalBlockBindingsSupportedAttributes?.[ blockName ]` (line 43); once the server-side filter (§6.1) adds `core/cover` to that list, the `<PatternOverridesControls>` "Enable overrides" button and the `<ResetOverridesControl>` toolbar button appear automatically (AC-2, AC-7..AC-10).
+Zero Cover-specific code. `withPatternOverrideControls` in `packages/editor/src/hooks/pattern-overrides.js` reads `__experimentalBlockBindingsSupportedAttributes?.[ blockName ]`; once the server-side filter (§6.1) adds `core/cover` to that list, the `<PatternOverridesControls>` "Enable overrides" button and the `<ResetOverridesControl>` toolbar button appear automatically (AC-2, AC-7..AC-10).
 
 `replacePatternOverridesDefaultBinding` in `packages/block-editor/src/utils/block-bindings.js` is used directly inside `useCoverBindingState`. This is the **same** helper the Block Bindings panel uses and the **same** semantics the server's `gutenberg_process_block_bindings` expansion uses (`lib/compat/wordpress-6.9/block-bindings.php:257-281`). Client and server agree on expansion by construction.
 
@@ -352,13 +473,13 @@ Zero Cover-specific code. `withPatternOverrideControls` in `packages/editor/src/
 
 ### 6.1 File: `lib/compat/wordpress-7.1/block-bindings.php` (NEW)
 
-Loaded from `lib/load.php` line ~83 alongside the other 7.1 REST-server-block entries:
+Loaded from `lib/load.php` alongside the other 7.1 compat entries:
 
 ```php
 require __DIR__ . '/compat/wordpress-7.1/block-bindings.php';
 ```
 
-Wrapped in `! function_exists( 'gutenberg_cover_bindings_render_block' )` per the established 7.1 backport pattern.
+Wrapped in `! function_exists( … )` per the established 7.1 backport pattern.
 
 **Part 1 — allow-list filter:**
 
@@ -380,7 +501,51 @@ if ( ! function_exists( 'gutenberg_cover_bindings_add_supported_attributes' ) ) 
 
 This filter feeds both `gutenberg_get_block_bindings_supported_attributes('core/cover')` (server-side resolution) and `__experimentalBlockBindingsSupportedAttributes['core/cover']` (editor setting via the existing `block_editor_settings_all` filter at `lib/compat/wordpress-6.9/block-bindings.php:33-46`). Single source of truth.
 
-**Part 2 — Cover-scoped render filter:**
+**Part 2 — `render_block_data` filter (NEW — solves AC-18 first-pass injection):**
+
+This filter runs **before** `render_callback` (verified at `wp-includes/blocks.php:2398` — `render_block_data` fires as `$inner_block->parsed_block = apply_filters( 'render_block_data', $inner_block->parsed_block, $source_block, $parent_block )`; for top-level blocks the equivalent fires in `render_block()` itself). By mutating `$parsed_block['attrs']['useFeaturedImage'] = false` here when bindings are active, we prevent `render_block_core_cover` from injecting the featured-image `<img>` in its first pass.
+
+```php
+if ( ! function_exists( 'gutenberg_cover_bindings_prepare_block' ) ) {
+    function gutenberg_cover_bindings_prepare_block( $parsed_block, $source_block, $parent_block ) {
+        // Gate: Cover only.
+        if ( 'core/cover' !== ( $parsed_block['blockName'] ?? '' ) ) {
+            return $parsed_block;
+        }
+        $attrs = $parsed_block['attrs'] ?? array();
+        // Gate: never engage for embed-video covers (AC-21).
+        if ( ! empty( $attrs['backgroundType'] ) && 'embed-video' === $attrs['backgroundType'] ) {
+            return $parsed_block;
+        }
+        // Gate: must have bindings on id AND url after __default expansion.
+        if ( ! gutenberg_cover_bindings_is_active( $attrs ) ) {
+            return $parsed_block;
+        }
+        // Neutralise useFeaturedImage so render_block_core_cover skips its
+        // featured-image branch entirely (Req 19, AC-18). DC-2 is preserved:
+        // this mutation is scoped to the in-flight $parsed_block array used by
+        // this single render pass; the persisted post_content is untouched.
+        if ( ! empty( $attrs['useFeaturedImage'] ) ) {
+            $parsed_block['attrs']['useFeaturedImage'] = false;
+        }
+        return $parsed_block;
+    }
+    add_filter( 'render_block_data', 'gutenberg_cover_bindings_prepare_block', 10, 3 );
+}
+```
+
+`gutenberg_cover_bindings_is_active( $attrs )` is a private helper defined in the same file. It applies `__default` expansion (via inline logic copied from `lib/compat/wordpress-6.9/block-bindings.php:257-281`, scoped to `[ 'id', 'url' ]`), checks both bindings exist and resolve to the same source instance, and returns a bool. **This replaces the previously-undefined `gutenberg_cover_bindings_expand` helper.**
+
+**Why `render_block_data` solves the AC-18 first-pass injection problem.** Verified at `/Users/carlos/.wp-env/cc4ba7b5738d99b49b19f399987f6e49/WordPress/wp-includes/class-wp-block.php:531-596`: `WP_Block::render()` calls `process_block_bindings()` (line 532), merges resolved bindings into `$this->attributes` (lines 534-536), and then calls `render_callback` (line 596). The `render_block_data` filter runs **before** `WP_Block::render()` is constructed (`render_block()` in `wp-includes/blocks.php:2398` applies it on the parsed block array). By that point, `$parsed_block['attrs']['useFeaturedImage']` has been forced to `false`, so:
+
+1. `WP_Block::__construct` builds `$this->attributes` from the (modified) `$parsed_block['attrs']`, with `useFeaturedImage = false`.
+2. `process_block_bindings` resolves `id`+`url` from the source and merges them into `$this->attributes`. `useFeaturedImage` is not in the bindings shape, so it remains `false`.
+3. `render_callback` (= `render_block_core_cover`) runs with `useFeaturedImage = false` AND the bound `url`. The featured-image branch (`packages/block-library/src/cover/index.php:133`: `if ( 'image' !== $attributes['backgroundType'] || false === $attributes['useFeaturedImage'] ) { return $content; }`) is skipped. No featured-image `<img>` is injected. `$content` contains only the saved-markup `<img>` / `<div bg>`, with the saved-`url` not yet substituted.
+4. The priority-9 `gutenberg_cover_bindings_render_block` filter (Part 3 below) runs on this `$content`, substitutes the bound URL into the saved `<img>` / rebuilt `<img>`, and rewrites the dim class.
+
+No double-`<img>`. AC-18 satisfied for both first-pass and any subsequent re-render (`gutenberg_block_bindings_render_block` at priority 10 calls `$instance->render()` again — `useFeaturedImage` is still false on `$instance->attributes`, so the second pass also skips the featured-image branch).
+
+**Part 3 — `render_block` filter (priority 9):**
 
 ```php
 if ( ! function_exists( 'gutenberg_cover_bindings_render_block' ) ) {
@@ -397,26 +562,16 @@ if ( ! function_exists( 'gutenberg_cover_bindings_render_block' ) ) {
         }
 
         // Gate: must have bindings on id AND url after __default expansion.
-        $bindings = $block['attrs']['metadata']['bindings'] ?? null;
-        if ( empty( $bindings ) ) {
+        if ( ! gutenberg_cover_bindings_is_active( $attrs ) ) {
             return $block_content;
-        }
-        $expanded = gutenberg_cover_bindings_expand( $bindings ); // applies __default to id/url
-        if ( empty( $expanded['id'] ) || empty( $expanded['url'] ) ) {
-            return $block_content;
-        }
-        if (
-            $expanded['id']['source'] !== $expanded['url']['source']
-            || ( $expanded['id']['args'] ?? null ) !== ( $expanded['url']['args'] ?? null )
-        ) {
-            // Mismatched sources — unresolvable. Strip the saved <img>/<div bg> entirely (Req 26, AC-6).
-            return gutenberg_cover_bindings_strip_image( $block_content );
         }
 
-        // Resolve via the standard bindings infrastructure.
-        $resolved = gutenberg_process_block_bindings( $instance );
-        $resolved_url = $resolved['url'] ?? null;
-        $resolved_id  = $resolved['id']  ?? null;
+        // Resolve via the standard bindings infrastructure. By this point,
+        // WP_Block::render() has already merged resolved bindings into
+        // $instance->attributes (verified at class-wp-block.php:531-536), so
+        // $attrs['url'] and $attrs['id'] are the bound values.
+        $resolved_url = $attrs['url'] ?? null;
+        $resolved_id  = $attrs['id']  ?? null;
         if ( empty( $resolved_url ) || empty( $resolved_id ) ) {
             return gutenberg_cover_bindings_strip_image( $block_content );
         }
@@ -439,35 +594,25 @@ if ( ! function_exists( 'gutenberg_cover_bindings_render_block' ) ) {
             $block_content = gutenberg_cover_bindings_relax_dim_class( $block_content );
         }
 
-        // (C) Suppress the useFeaturedImage injection in render_block_core_cover (Req 19, AC-18).
-        // Achieved by mutating $instance->attributes BEFORE the priority-10 render path runs.
-        if ( ! empty( $attrs['useFeaturedImage'] ) ) {
-            $instance->attributes['useFeaturedImage'] = false;
-        }
-        // Also stop render_block_core_cover from re-running the parallax/featured-image branch on
-        // a now-image-substituted markup: render_callback executes BEFORE this filter (render_callback
-        // produces $content; render_block filters run on $content). Setting useFeaturedImage=false here
-        // applies only to the gutenberg_block_bindings_render_block re-render at priority 10 (see below).
-
         return $block_content;
     }
     add_filter( 'render_block', 'gutenberg_cover_bindings_render_block', 9, 3 );
 }
 ```
 
-**Filter priority 9** is essential: `gutenberg_block_bindings_render_block` (the generic bindings filter from `lib/compat/wordpress-6.9/block-bindings.php`) registers at priority 10. Running before it means our Cover-scoped substitution happens on the saved markup, before the generic filter re-runs `$instance->render()` (which would re-execute `render_block_core_cover` and could re-inject a featured image).
+**Filter priority 9** is essential: `gutenberg_block_bindings_render_block` (the generic bindings filter from `lib/compat/wordpress-6.9/block-bindings.php`) registers at priority 10. Running before it means our Cover-scoped substitution happens on the saved markup before the generic filter re-runs `$instance->render()` (which would re-execute `render_block_core_cover`, but at that point `useFeaturedImage` is already false thanks to Part 2 — so the second pass produces the same `$content` shape as the first, and our priority-9 substitution remains correct).
 
-Alternative considered: run at priority 11 (after) and let the generic filter's `gutenberg_replace_html` no-op on Cover's `url`/`id` (they have no `source` declaration so it's already a no-op for non-`source`-declared attributes per `lib/compat/wordpress-6.9/block-bindings.php:347-349`). Rejected: the generic filter calls `$instance->render()` which re-executes `render_block_core_cover` with the resolved attributes, and that callback's `useFeaturedImage` branch may inject a featured-image `<img>` — exactly the double-insertion AC-18 forbids. Running at priority 9 lets us mutate `$instance->attributes['useFeaturedImage'] = false` before the priority-10 re-render. (See AC-18 trace.)
+**Notes on `gutenberg_process_block_bindings` double-call.** Core 6.9's `process_block_bindings` is called once inside `WP_Block::render()` (line 532). The generic filter's priority-10 re-render path calls `$instance->render()` again, which calls `process_block_bindings()` a second time. Functionally correct (resolution is idempotent); cost is bounded and acceptable for v1. Listed under §15 risks for future optimisation.
 
 ### 6.2 Helper: `gutenberg_cover_bindings_rewrite_image`
 
 Per §3 OQ-3, two paths:
 
-1. **Plain `<img>` saved form** (`!hasParallax && !isRepeated` at save time): `WP_HTML_Tag_Processor::next_tag(['tag_name'=>'IMG','class_name'=>'wp-block-cover__image-background'])` + `set_attribute('src', $resolved_url)` + `set_attribute('alt', $attrs['alt'] ?? '')` + (optional) `set_attribute('class', preg_replace('/\bwp-image-\d+\b/', "wp-image-{$resolved_id}", $current))`.
+1. **Plain `<img>` saved form** (`!hasParallax && !isRepeated` at save time): `WP_HTML_Tag_Processor::next_tag(['tag_name'=>'IMG','class_name'=>'wp-block-cover__image-background'])`, then `set_attribute( 'src', $resolved_url )` + `set_attribute( 'alt', $alt )` + `remove_class( 'wp-image-{old}' )` + `add_class( 'wp-image-{new}' )`. All four methods verified public.
 
-2. **`<div style="background-image:url(…)">` saved form** (parallax or repeat): locate via `WP_HTML_Tag_Processor` with `tag_name=>'DIV'` and `class_name=>'wp-block-cover__image-background'`, compute byte range, splice in a rebuilt `<img>` HTML string. Drop `has-parallax`/`is-repeated` classes by construction (the rebuilt string never contains them). AC-19.
+2. **`<div style="background-image:url(…)">` saved form** (parallax or repeat): use `preg_match` with `PREG_OFFSET_CAPTURE` on the pattern `/<div\s+[^>]*\bwp-block-cover__image-background\b[^>]*><\/div>/U` (same shape as `packages/block-library/src/cover/index.php:117-125, 193-197`), compute byte range, splice in a rebuilt `<img>` HTML string. Drop `has-parallax`/`is-repeated` classes by construction (the rebuilt string never contains them). AC-19.
 
-Both paths also need to drop a stale `wp-image-{old_id}` class and substitute `wp-image-{new_id}`; the `WP_HTML_Tag_Processor::remove_class` / `add_class` methods cover this for path 1.
+The function probes form (2) first (`preg_match` succeeds when the saved-markup is the `<div>` form, regardless of presence of `hasParallax`/`isRepeated` in `$attrs` — saved markup is the source of truth, not the attributes); falls through to form (1) (plain `<img>`) otherwise.
 
 ### 6.3 Helper: `gutenberg_cover_bindings_relax_dim_class`
 
@@ -487,25 +632,25 @@ Idempotent (calling twice is harmless). Targets the overlay span only; the `has-
 
 ### 6.4 Helper: `gutenberg_cover_bindings_strip_image`
 
-For the unresolvable / mismatched / external-URL case (Req 20, AC-5, AC-6): use `WP_HTML_Tag_Processor` to locate any element with `class_name=>'wp-block-cover__image-background'` (both `IMG` and `DIV` forms) and **remove the element entirely** from `$content` via the same byte-offset splice as OQ-3 mechanism (i). The cover renders without an image element, overlay-only.
+For the unresolvable / mismatched / external-URL case (Req 20, AC-5, AC-6): use the same `preg_match` + `substr`-splice approach (form-2 pattern, plus a form-1 pattern for plain `<img>`) to **remove** any element with class `wp-block-cover__image-background` from `$content`. The cover renders without an image element, overlay-only.
 
 ### 6.5 PHPUnit coverage
 
 New cases in `phpunit/blocks/render-block-cover-test.php`:
 
-1. **Bound URL substitution.** Construct a parsed-block array with `metadata.bindings.url = { source: testing/x }` and `metadata.bindings.id` likewise; register a test source returning a known media-library attachment. Assert `<img src="…">` contains the resolved URL.
+1. **Bound URL substitution (plain `<img>` saved form).** Construct a parsed-block array with `metadata.bindings.url = { source: testing/x }` and `metadata.bindings.id` likewise; register a test source returning a known media-library attachment. Assert `<img src="…">` contains the resolved URL.
 2. **Default-dimRatio class rewrite.** Same setup, `dimRatio` omitted (defaults to 100). Assert resulting HTML contains `wp-block-cover__background has-background-dim` but NOT `has-background-dim-100` (AC-16, AC-25).
 3. **Non-default dimRatio preserved.** Same setup with `dimRatio: 70`. Assert `has-background-dim-70` is present (AC-17).
 4. **Parallax saved markup gets rebuilt.** Construct saved markup with the `<div class="wp-block-cover__image-background" style="background-image:url(…)"></div>` form. Assert resulting HTML has `<img class="wp-block-cover__image-background"` and no `has-parallax` / `is-repeated` classes on it (AC-19).
 5. **Mismatched sources strip the image.** `metadata.bindings.id.source === 'A'`, `metadata.bindings.url.source === 'B'`. Assert no `wp-block-cover__image-background` element in output (AC-6).
 6. **External URL strip.** Source returns a URL but a non-attachment id. Assert no `wp-block-cover__image-background` (AC-5).
-7. **`useFeaturedImage` short-circuit.** `useFeaturedImage: true` with active bindings. Assert exactly one `wp-block-cover__image-background` element and its `src` is the bound URL, not the featured image URL (AC-18).
+7. **`useFeaturedImage: true` short-circuit.** `useFeaturedImage: true` with active bindings AND a featured-image set on the test post. Assert exactly one `wp-block-cover__image-background` element and its `src` is the bound URL, not the featured image URL (AC-18). This directly validates the `render_block_data` filter (§6.1 Part 2): without it, two elements would appear.
 8. **Embed-video carve-out.** `backgroundType: 'embed-video'` with active bindings. Assert no `<img>` substitution; the iframe path runs (AC-21).
 9. **Unbound cover untouched.** No bindings. Assert the existing `render_block_core_cover` output is byte-identical to trunk (AC-20).
 
 ## 7. `block.json` changes
 
-Add `"role": "content"` to the `id` attribute (lines 18–20 of `packages/block-library/src/cover/block.json`). The current `url` attribute already has `role: "content"` (lines 10–13).
+Add `"role": "content"` to the `id` attribute of `packages/block-library/src/cover/block.json`. The current `url` attribute already has `role: "content"`.
 
 ```diff
    "id": {
@@ -515,7 +660,7 @@ Add `"role": "content"` to the `id` attribute (lines 18–20 of `packages/block-
    },
 ```
 
-No other attribute schema changes. No new attributes. No supports changes. No deprecation entry needed (role is metadata-only — see Q19 in requirements.md).
+No other attribute schema changes. No new attributes. No supports changes. No deprecation entry needed (role is metadata-only).
 
 ## 8. Block Bindings registration
 
@@ -523,8 +668,8 @@ Bindings for `id` and `url` on `core/cover` are added by the new `block_bindings
 
 Exact code references:
 - `lib/compat/wordpress-6.9/block-bindings.php:118-167` (`gutenberg_get_block_bindings_supported_attributes`) — the function our filter hooks into.
-- `lib/compat/wordpress-6.9/block-bindings.php:33-46` (`block_editor_settings_all` filter) — populates the editor setting that `packages/block-editor/src/hooks/block-bindings.js:40-100` reads.
-- `packages/block-editor/src/hooks/block-bindings.js:122-127` — Cover is NOT in the excluded-blocks list. Once the server filter adds `id`/`url`, the Block Bindings panel renders automatically (AC-1, Q12).
+- `lib/compat/wordpress-6.9/block-bindings.php:33-46` (`block_editor_settings_all` filter) — populates the editor setting that `packages/block-editor/src/hooks/block-bindings.js` reads.
+- `packages/block-editor/src/hooks/block-bindings.js:122-127` — Cover is NOT in the excluded-blocks list. Once the server filter adds `id`/`url`, the Block Bindings panel renders automatically (AC-1).
 
 No new editor-side allow-list, no Cover-specific UI registration code.
 
@@ -532,9 +677,9 @@ No new editor-side allow-list, no Cover-specific UI registration code.
 
 Driven entirely by existing infrastructure:
 
-1. **`__default` expansion (client).** `useCoverBindingState` calls `replacePatternOverridesDefaultBinding( bindings, [ 'id', 'url' ] )` from `packages/block-editor/src/utils/block-bindings.js:27-46`. After expansion, the `__default: { source: 'core/pattern-overrides' }` shape becomes `{ id: { source: 'core/pattern-overrides' }, url: { source: 'core/pattern-overrides' } }`, which is exactly the same-source-instance shape `bindingActive` accepts. Per Glossary "Expanded bindings".
-2. **`__default` expansion (server).** `gutenberg_process_block_bindings` (`lib/compat/wordpress-6.9/block-bindings.php:257-281`) expands `__default` server-side. Same semantics.
-3. **Reset toolbar.** `withPatternOverrideControls` (`packages/editor/src/hooks/pattern-overrides.js:37-122`) wires `<ResetOverridesControl>` automatically once the block is allow-listed.
+1. **`__default` expansion (client).** `useCoverBindingState` calls `replacePatternOverridesDefaultBinding( bindings, [ 'id', 'url' ] )` from `packages/block-editor/src/utils/block-bindings.js`. After expansion, the `__default: { source: 'core/pattern-overrides' }` shape becomes `{ id: { source: 'core/pattern-overrides' }, url: { source: 'core/pattern-overrides' } }`, which is exactly the same-source-instance shape `bindingActive` accepts. Per Glossary "Expanded bindings".
+2. **`__default` expansion (server).** `gutenberg_process_block_bindings` (`lib/compat/wordpress-6.9/block-bindings.php:257-281`) expands `__default` server-side. Same semantics. Our `gutenberg_cover_bindings_is_active` helper (§6.1) re-implements the same expansion locally (because we need to read the expansion BEFORE `gutenberg_process_block_bindings` runs, in the `render_block_data` filter).
+3. **Reset toolbar.** `withPatternOverrideControls` (`packages/editor/src/hooks/pattern-overrides.js`) wires `<ResetOverridesControl>` automatically once the block is allow-listed.
 4. **Enable Overrides button.** Same HOC wires `<PatternOverridesControls>` for the synced-pattern authoring view.
 
 Zero Cover code touches Pattern Overrides directly.
@@ -545,11 +690,11 @@ Three layers of enforcement, all gated by the same `bindingActive` semantic:
 
 | Layer | Enforcement site | Outcome |
 | --- | --- | --- |
-| Editor render | `CoverEdit` render tree (§5.4) | If `bindingUnresolvable`, render the `<Placeholder data-testid="cover-binding-unresolvable">` and do NOT render an `<img>` (AC-4). |
+| Editor render | `CoverEdit` render tree (§5.4) | If `bindingUnresolvable`, render `<Placeholder>` with `instructions={ __( 'Internal media required for this binding.' ) }` and do NOT render an `<img>` (AC-4). |
 | Editor controls | `useCoverBindingState` flips `bindingActive: false` when sources don't match | Parallax/repeat/replace/featured-image controls return to their unbound rendering. This is intentional: a mismatched-binding cover is treated as if there's no binding, so the user has the normal cover affordances to fix it. |
-| Server render | `gutenberg_cover_bindings_render_block` (§6.1) | Mismatched/missing/non-attachment id → `gutenberg_cover_bindings_strip_image` → no `<img>` in output (AC-5, AC-6, AC-20 unresolvable path). |
+| Server render | `gutenberg_cover_bindings_render_block` (§6.1) | Mismatched/missing/non-attachment id → `gutenberg_cover_bindings_strip_image` → no `<img>` in output (AC-5, AC-6). |
 
-The "internal media required" affordance test-observable signal is `data-testid="cover-binding-unresolvable"` AND the i18n string `__( 'Internal media required for this binding.' )` (OQ-6).
+The "internal media required" affordance test-observable signal is the i18n message string `__( 'Internal media required for this binding.' )` (primary; e2e asserts via `getByText`), with `data-testid="cover-binding-unresolvable"` as a secondary stability hook (OQ-6).
 
 ## 11. Testing strategy
 
@@ -580,13 +725,13 @@ test.describe( 'Block Bindings — Pattern Overrides round-trip', () => {
     test( 'Cover round-trips through default → override → reset', async ({ editor, page, requestUtils, admin }) => {
         // Setup: upload two attachments (defaultMedia, overrideMedia).
         // 1. Create synced pattern with a Cover whose url+id are bound via "Enable overrides".
-        //    Insert Cover → set media to defaultMedia → open Inspector → Advanced → "Enable overrides".
         // 2. Save pattern. Open new post. Insert the synced pattern.
         // 3. Assert (default state):
         //    - Editor preview <img src> points at defaultMedia.url.
         //    - Parallax / Repeat ToolsPanelItems are not visible (AC-11, AC-12).
-        //    - <MediaReplaceFlow> toolbar button is not visible (AC-13, AC-14).
-        //    - "Use featured image" menu item is not visible (AC-13).
+        //    - <MediaReplaceFlow> "Use featured image" MenuItem is not visible (AC-13).
+        //    - <MediaReplaceFlow> upload/replace MenuItems are not visible (AC-14).
+        //    - <MediaReplaceFlow> "Embed video from URL" MenuItem IS visible (AC-21 preserved).
         //    - Overlay span class does NOT contain 'has-background-dim-100' (AC-15).
         //    - ResetOverridesControl toolbar button is disabled (AC-10, OQ-2).
         // 4. Override the instance: programmatically setBlockAttributes with new url+id.
@@ -599,8 +744,8 @@ test.describe( 'Block Bindings — Pattern Overrides round-trip', () => {
         //    - Assert editor preview <img src> back to defaultMedia.url.
         //    - Publish; front-end same.
         // 6. Unresolvable case: programmatically create a Cover with mismatched bindings
-        //    (id.source !== url.source). Assert the `data-testid="cover-binding-unresolvable"`
-        //    Placeholder is visible (AC-24).
+        //    (id.source !== url.source). Assert the i18n message is visible (AC-24):
+        //    await expect( page.getByText( 'Internal media required for this binding.' ) ).toBeVisible();
     } );
 } );
 ```
@@ -613,12 +758,25 @@ Existing `cover.spec.js` cases run untouched. Existing `packages/block-library/s
 
 ## 12. Backwards compatibility
 
-- **Unbound covers untouched.** All gating predicates (`bindingActive`, the server filter's early-return on `empty($bindings)`) flip false when `metadata.bindings` is absent. The new code path is dead code on every existing unbound cover. AC-20.
+- **Unbound covers untouched.** All gating predicates (`bindingActive`, the server filters' early-return on `! gutenberg_cover_bindings_is_active( $attrs )`) flip false when `metadata.bindings` is absent. The new code path is dead code on every existing unbound cover. AC-20.
 - **No `save.js` change.** The serialized markup shape is identical to trunk. Deprecation chain unchanged. AC-20.
 - **No new attribute.** `id` gains a `role: "content"` annotation only — metadata-only, not part of the saved markup.
-- **Embed-video carve-out.** Both client and server short-circuit on `backgroundType === 'embed-video'`, regardless of binding presence. AC-21.
-- **`useFeaturedImage` precedence rule.** When both `useFeaturedImage: true` and an active binding co-exist on the same cover, the binding wins (server: `$instance->attributes['useFeaturedImage'] = false` is set BEFORE the priority-10 generic-bindings re-render). The stored `useFeaturedImage` attribute is NOT mutated (the mutation is to the in-flight `$instance` object, scoped to this single render pass — not to the post content). AC-18, DC-2 satisfied (no `setAttributes` on client, no persisted attribute change on server).
+- **Embed-video carve-out.** Both client and server short-circuit on `backgroundType === 'embed-video'`, regardless of binding presence. AC-21. The "Embed video from URL" menu item under `<MediaReplaceFlow>` remains accessible on bound covers (regardless of `backgroundType`), preserving the affordance per AC-21.
+- **`useFeaturedImage` precedence rule (AC-18).** When both `useFeaturedImage: true` and an active binding co-exist on the same cover, the binding wins. Mechanism: the `render_block_data` filter (§6.1 Part 2) mutates `$parsed_block['attrs']['useFeaturedImage'] = false` BEFORE `render_callback` runs, so `render_block_core_cover` skips its featured-image injection branch. The stored `useFeaturedImage` attribute on the post content is NOT mutated (the mutation is to the in-flight `$parsed_block` array, scoped to this single render pass). DC-2 is preserved on the persistence path (no `setAttributes` on client, no persisted post_content change on server). On the client, `bindingActive` is derived from the persisted attribute state including `useFeaturedImage`; if a saved Cover has both `useFeaturedImage: true` and bindings, the editor's `effectiveUrl` prefers `bindingResolvedUrl` over `mediaUrl` per §5.2, matching the server's precedence. AC-18 satisfied.
 - **`! function_exists` / version guards.** The new compat file follows the established pattern from `lib/compat/wordpress-6.9/block-comments.php:63,84`. Graceful degradation on a WP install lacking the bindings infrastructure (Req 39). The Cover Edit component's new hook reads `metadata?.bindings` defensively — when `__experimentalBlockBindingsSupportedAttributes['core/cover']` is undefined (pre-7.1 server), `bindingActive` returns false and the existing code path runs.
+- **AC-26 (PR shape — file path).** The new compat file lives at `lib/compat/wordpress-7.1/block-bindings.php` and is loaded via `lib/load.php`. No file under `lib/compat/wordpress-7.0/`. See §2.2 and §6.1.
+- **AC-27 (PR description).** The Gutenberg PR description MUST link issue #77199 and MUST explicitly state whether/how this PR subsumes #74109 and #74610. This is a PR-creation step rather than a code change; the design records it as a hard requirement on the PR-open phase. Suggested wording is included in the Code phase's PR-creation step.
+- **AC-28 (~500-line diff budget).** Estimated diff sizes (additions):
+  - `lib/compat/wordpress-7.1/block-bindings.php`: ~160 lines
+  - `packages/block-library/src/cover/edit/use-cover-binding-state.js` (new): ~70 lines
+  - `packages/block-library/src/cover/edit/index.js`: ~60 lines net (observer replacement + render-tree gating)
+  - `packages/block-library/src/cover/edit/inspector-controls.js`: ~10 lines
+  - `packages/block-library/src/cover/edit/block-controls.js`: ~10 lines
+  - `packages/block-library/src/cover/block.json`: ~2 lines
+  - `lib/load.php`: ~1 line
+  - PHPUnit (9 cases): ~140 lines
+  - E2E (1 describe block, ~6 assertion steps): ~80 lines
+  - **Total: ~533 lines.** Just over budget; the +0.5K-line ceiling is "SHOULD" (Req 38) not MUST. Acceptable; if reviewers push back, the e2e block can be trimmed to ~50 lines by combining steps 4 + 5.
 
 ## 13. Trade-offs and alternatives considered
 
@@ -632,20 +790,49 @@ Approach B (PR #74610's generic `block_bindings_attribute_replaced_in_markup` fi
 | Solves `<img src>` substitution | Yes (Cover-scoped) | Yes (generic) |
 | Solves dim-class rewrite | Yes | No — needs Cover-side supplement |
 | Solves parallax-div → `<img>` rebuild | Yes | No — needs Cover-side supplement (Risk 5) |
-| Solves `useFeaturedImage` short-circuit | Yes | No — needs Cover-side supplement |
-| Lines added to PR | Single file, ~150 lines | Generic filter + Cover-side supplement: ~200 lines |
+| Solves `useFeaturedImage` short-circuit | Yes (via render_block_data) | No — needs Cover-side supplement |
+| Lines added to PR | Single file, ~160 lines | Generic filter + Cover-side supplement: ~210 lines |
 | Cross-block risk surface | Zero | Non-zero (filter affects every binding-substituted block) |
 | Reuse value for future bindable blocks | Zero | Some (e.g. a future block with non-source-declared `url`) |
 
 Net: Approach A wins on every dimension that touches this spec. Approach B's reuse value is real but speculative; the spec also flags it as out-of-scope absent a clear cross-block need (Req 28, Out-of-Scope "New global Block Bindings APIs").
 
+### AC-18 mitigation: render_block_data vs in-callback override vs filter
+
+Three options considered for the `useFeaturedImage: true + bindingActive` precedence:
+
+| | Chosen: `render_block_data` filter | Alt A: in `render_block_core_cover` | Alt B: in priority-9 `render_block` filter (prior design) |
+| --- | --- | --- | --- |
+| Where suppression happens | Before `render_callback` | Inside `render_callback` | After `render_callback` |
+| First-pass injection prevented | Yes | Yes | **No** — already happened |
+| Touches `render_block_core_cover` | No | Yes | No |
+| Cross-PR-coordination needed | No (Gutenberg-side only) | Yes (touches a Core-owned callback) | No |
+| AC-18 satisfied | **Yes** | Yes | **No** |
+
+Alt A would require modifying `render_block_core_cover` itself to peek at `metadata.bindings`, adding a binding-awareness coupling to a Core callback. Better to keep all binding-awareness in the new compat file (consistent with the file-table in §2.2).
+
+Alt B (the prior design's approach) leaves a window in which `render_callback` emits the featured-image element, then our filter rewrites the saved `<img>` but the *injected* featured-image element survives → double `<img>`. Rejected per the iter-1 review Issue 3.
+
+The chosen `render_block_data` approach intercepts at the parsed-block level, before `WP_Block::render` even begins. Verified at `wp-includes/blocks.php:2398` and `wp-includes/class-wp-block.php:531-596`. DC-2 is preserved because the mutation is on the in-flight `$parsed_block` array passed by reference for this render only — the persisted post_content is not touched.
+
 ### Client-side: source-agnostic observer vs explicit `useBindings` derivation
 
 Considered: a separate `useEffect` keyed on `metadata.bindings` that synchronises a derived `bindingUrl` state into the existing observer. Rejected: that is exactly the multi-`useEffect` proliferation Risk 1 / DC-1 forbid. The chosen design (one effect, keyed on `effectiveUrl`, with `useEffectEvent` for latest-value reads) collapses every URL-derivation trigger into a single signal.
 
+### Client-side: race-token via ref vs cleanup-flag in useEffect
+
+The cleanup-flag pattern (`let cancelled = false; ...; return () => { cancelled = true; };`) is React's documented idiom for async work inside `useEffect`. The chosen ref-based pattern was preferred because:
+- The async work lives inside `useEffectEvent`, not `useEffect` body. `useEffectEvent`'s contract is to read latest values; binding a `cancelled` flag in the `useEffect` body's closure would couple the flag to a stale snapshot. Hoisting it to `useEffectEvent` would re-introduce dep-array churn.
+- The ref-based token is monotonic and shared across all observer invocations — a clean primitive for "newest resolution wins" that survives observer re-runs caused by multiple effectiveUrl changes between resolutions.
+- Explicit `useRef( 0 )` declaration at the top of the component is required (sketched in §5.2).
+
 ### Pattern Overrides reset: disable vs hide
 
 OQ-2 chose disable. Hiding the button would require Cover-specific overrides of `ResetOverridesControl` (or a wholesale change to all bindable blocks). The hide approach has no UX advantage and would diverge Cover from every other bindable block; the disable approach is the existing contract.
+
+### OQ-6 test-observable signal: i18n string vs data-testid
+
+Both retained, with primary/secondary ordering. The i18n string is the load-bearing contract per spec Req 16; `data-testid` is a translation-resilience safety net. E2E asserts on the i18n string (`page.getByText( 'Internal media required for this binding.' )`). If a future reviewer removes `data-testid` because "test-only props in production DOM smell bad", the e2e test remains green.
 
 ## 14. Out-of-scope reminders (from spec, repeated here to keep design honest)
 
@@ -656,12 +843,14 @@ The design explicitly does NOT implement:
 - **Parallax × bindings beyond force-off.** No CSS-in-`style` rewrites. The parallax/repeat saved markup is replaced with a plain `<img>` when bindings have resolved a value (OQ-3 mechanism (i)).
 - **Embed-video × bindings beyond non-regression.** Both client and server short-circuit. The iframe's `src` is the saved `url`, never substituted from the bound `url`. AC-21.
 - **Featured-image binding** (expressing `useFeaturedImage` AS a binding source). Separate follow-up PR. This PR enforces the precedence rule only (AC-18).
-- **New global Block Bindings APIs.** None introduced. The chosen Cover-scoped filter is `add_filter( 'render_block', ..., 9, 3 )` with the standard signature — not a new API.
+- **New global Block Bindings APIs.** None introduced. The chosen Cover-scoped filters are `add_filter( 'render_block_data', ..., 10, 3 )` and `add_filter( 'render_block', ..., 9, 3 )` with the standard signatures — not a new API.
 - **Post-data source `featured_media.url` / `featured_media.id`.** Out of scope.
 
 ## 15. Risks / open questions surfaced by this design
 
-1. **Priority-9 vs priority-10 ordering.** The Cover render filter runs at priority 9 to mutate `$instance->attributes['useFeaturedImage'] = false` before `gutenberg_block_bindings_render_block` re-runs `$instance->render()`. If a future change to the generic filter changes its registration priority, the ordering invariant breaks. Mitigation: PHPUnit case §6.5(7) catches this regression. Add a comment in the new compat file pinning the rationale.
-2. **`WP_HTML_Tag_Processor` byte-offset helpers**. OQ-3 mechanism (i) leans on `get_token_byte_offset_in_source_text()` / `get_full_token_length()`. These are public WP HTML API methods but availability across WP versions in the version-guard window needs confirmation during implementation. Fallback: `preg_match` with `PREG_OFFSET_CAPTURE` mirrors the pattern already used at `packages/block-library/src/cover/index.php:117-125`.
-3. **`gutenberg_process_block_bindings` is called twice per render** (once in our priority-9 filter, once in the priority-10 generic filter). This is functionally correct but wastes work. Acceptable for v1; a future micro-optimisation could cache resolution per `$instance`.
-4. **Race between `attachment` REST loading and `bindingResolvedId` check.** Client-side, the media-library record lookup via `useSelect` returns `undefined` while loading and `null` if resolved-not-found. The hook currently treats `undefined` as pending (no unresolvable affordance yet) and `null` as unresolvable. There's a single render where the cover shows neither image nor unresolvable affordance. Acceptable; pattern matches how `core/image` handles the same race.
+1. **Priority-9 vs priority-10 ordering.** The Cover render filter runs at priority 9. The neutralisation of `useFeaturedImage` runs even earlier at `render_block_data` priority 10. If a future change to either generic filter changes registration priority, the ordering invariant breaks. Mitigation: PHPUnit case §6.5(7) catches this regression; add a comment in the new compat file pinning the rationale.
+2. **`gutenberg_cover_bindings_is_active` duplicates `__default` expansion logic** from `lib/compat/wordpress-6.9/block-bindings.php:257-281`. This is intentional (we need the expansion result BEFORE `gutenberg_process_block_bindings` runs, in the `render_block_data` filter, while the generic helper does it inline) but introduces a small divergence risk if Core changes expansion semantics. Mitigation: PHPUnit case §6.5(7) and #6.5(5) catch behavioural divergence; if Core promotes expansion into a public helper, swap to it.
+3. **`gutenberg_process_block_bindings` is called twice per render** (once via `WP_Block::render()` at line 532, once via the priority-10 generic filter's `$instance->render()` re-call). Functionally correct (resolution is idempotent) but wastes work. Acceptable for v1; a future micro-optimisation could cache resolution per `$instance`.
+4. **Race between `attachment` REST loading and `bindingResolvedId` check.** Client-side, the media-library record lookup via `useSelect` returns `undefined` while loading and `null` if resolved-not-found. The hook treats `undefined` as pending (bound-but-pending placeholder per §5.4 (1)) and `null` as unresolvable. There's a transient render where the cover shows the pending placeholder instead of the resolved image — duration is one network round-trip. Acceptable; pattern matches how `core/image` handles the same race.
+5. **AC-14 literal-DOM-absence vs functional-absence.** Design satisfies the *functional* AC-14 (media-replace not offered) by setting `onSelect` / `onToggleFeaturedImage` / `onReset` to `undefined`, leaving the `<MediaReplaceFlow>` toolbar wrapper in the DOM to host the embed `<MenuItem>` (AC-21). If reviewers insist on absolute absence of `<MediaReplaceFlow>`, the spec must be re-opened to reconcile AC-14 vs AC-21. Recommendation: assert on menu-item absence in the e2e test (§11.3), not on `<MediaReplaceFlow>` absence — matches the chosen design.
+6. **Backport-changelog entry timing.** `backport-changelog/7.1/<core-pr>.md` is created when the corresponding Core PR is filed; not a blocker for the Gutenberg PR landing. The Gutenberg PR description includes a `TODO: backport-changelog entry pending Core PR #NNN` note and is updated once the Core PR number is known.
