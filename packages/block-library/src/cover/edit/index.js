@@ -620,6 +620,7 @@ function CoverEdit( {
 			toggleUseFeaturedImage={ toggleUseFeaturedImage }
 			onClearMedia={ onClearMedia }
 			blockEditingMode={ blockEditingMode }
+			bindingActive={ bindingActive }
 		/>
 	);
 
@@ -635,6 +636,7 @@ function CoverEdit( {
 			updateDimRatio={ onUpdateDimRatio }
 			onClearMedia={ onClearMedia }
 			featuredImage={ media }
+			bindingActive={ bindingActive }
 		/>
 	);
 
@@ -881,12 +883,14 @@ function CoverEdit( {
 
 				{ isUploadingMedia && <Spinner /> }
 
-				<CoverPlaceholder
-					disableMediaButtons
-					onSelectMedia={ onSelectMedia }
-					onError={ onUploadError }
-					toggleUseFeaturedImage={ toggleUseFeaturedImage }
-				/>
+				{ ! bindingActive && (
+					<CoverPlaceholder
+						disableMediaButtons
+						onSelectMedia={ onSelectMedia }
+						onError={ onUploadError }
+						toggleUseFeaturedImage={ toggleUseFeaturedImage }
+					/>
+				) }
 				<div { ...innerBlocksProps } />
 			</TagName>
 			{ hasNonContentControls && isSelected && (
