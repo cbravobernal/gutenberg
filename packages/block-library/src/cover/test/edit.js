@@ -647,4 +647,77 @@ describe( 'Cover block', () => {
 			).not.toBeInTheDocument();
 		} );
 	} );
+
+	describe( 'Bindings control gating', () => {
+		const TEST_SOURCE = 'test/cover-binding-controls';
+		const TEST_RESOLVED_URL = 'http://localhost/bound-image.jpg';
+		const TEST_RESOLVED_ID = 4242;
+
+		beforeEach( () => {
+			registerBlockBindingsSource( {
+				name: TEST_SOURCE,
+				label: 'Test cover binding controls source',
+				getValues: () => ( {
+					id: TEST_RESOLVED_ID,
+					url: TEST_RESOLVED_URL,
+				} ),
+				canUserEditValue: () => false,
+			} );
+		} );
+
+		afterEach( () => {
+			unregisterBlockBindingsSource( TEST_SOURCE );
+		} );
+
+		const boundBindings = {
+			id: { source: TEST_SOURCE },
+			url: { source: TEST_SOURCE },
+		};
+
+		test( 'hides the "Fixed background" and "Repeated background" inspector controls when bindingActive', async () => {
+			await setup( {
+				url: 'http://localhost/stored-image.jpg',
+				backgroundType: 'image',
+				metadata: { bindings: boundBindings },
+			} );
+
+			// Force-img branch engages, confirming the binding is active and
+			// the inspector subtree has rendered alongside it.
+			await screen.findByRole( 'img' );
+
+			// On bound covers the parallax / repeat toggles are absent from
+			// the document regardless of selection state — the inspector is
+			// rendered unconditionally by `CoverEdit`, so we can assert on
+			// the global DOM without going through `selectBlock`.
+			expect(
+				screen.queryByLabelText( 'Fixed background' )
+			).not.toBeInTheDocument();
+			expect(
+				screen.queryByLabelText( 'Repeated background' )
+			).not.toBeInTheDocument();
+		} );
+
+		test( 'hides the MediaReplaceFlow toolbar button when bindingActive', async () => {
+			await setup( {
+				url: 'http://localhost/stored-image.jpg',
+				backgroundType: 'image',
+				metadata: { bindings: boundBindings },
+			} );
+
+			// Force-img branch engages, confirming the binding is active and
+			// the block-toolbar subtree has rendered alongside it.
+			await screen.findByRole( 'img' );
+
+			// On bound covers the `<MediaReplaceFlow>` toggle is absent from
+			// the document regardless of selection state — `<BlockControls>`
+			// portals are present in the global DOM whenever `CoverEdit`
+			// renders.
+			expect(
+				screen.queryByRole( 'button', { name: 'Replace' } )
+			).not.toBeInTheDocument();
+			expect(
+				screen.queryByRole( 'button', { name: 'Add media' } )
+			).not.toBeInTheDocument();
+		} );
+	} );
 } );

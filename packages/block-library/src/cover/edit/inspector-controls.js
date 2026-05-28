@@ -90,6 +90,37 @@ function CoverHeightInput( {
 		/>
 	);
 }
+/**
+ * Inspector controls rendered alongside the Cover block.
+ *
+ * @param {Object}   props                 The component props.
+ * @param {Object}   props.attributes      The block's stored attributes.
+ * @param {Function} props.setAttributes   Setter for the block's attributes.
+ * @param {string}   props.clientId        The block's client ID.
+ * @param {Function} props.setOverlayColor Setter for the overlay color
+ *                                         (drives the `getMediaColor`-based
+ *                                         dark/light derivation).
+ * @param {Object}   props.coverRef        Ref to the cover root element,
+ *                                         used by the focal-point preview.
+ * @param {Object}   props.currentSettings Source-agnostic snapshot of the
+ *                                         cover's render state (`url`,
+ *                                         `isImageBackground`, …).
+ * @param {Function} props.updateDimRatio  Setter for the overlay opacity
+ *                                         (handles the `isDark`
+ *                                         recomputation).
+ * @param {Object}   props.featuredImage   The resolved featured-image
+ *                                         attachment record, when
+ *                                         `useFeaturedImage` is set.
+ * @param {boolean}  props.bindingActive   Whether the cover has an
+ *                                         active block binding on `id` /
+ *                                         `url`. When `true`, controls
+ *                                         that would mutate
+ *                                         binding-controlled attributes
+ *                                         (parallax / repeat) are omitted
+ *                                         from the inspector entirely — a
+ *                                         literal DOM absence rather than
+ *                                         a `disabled` state.
+ */
 export default function CoverInspectorControls( {
 	attributes,
 	setAttributes,
@@ -99,6 +130,7 @@ export default function CoverInspectorControls( {
 	currentSettings,
 	updateDimRatio,
 	featuredImage,
+	bindingActive,
 } ) {
 	const {
 		useFeaturedImage,
@@ -223,7 +255,7 @@ export default function CoverInspectorControls( {
 						} }
 						dropdownMenuProps={ dropdownMenuProps }
 					>
-						{ isImageBackground && (
+						{ isImageBackground && ! bindingActive && (
 							<>
 								<ToolsPanelItem
 									label={ __( 'Fixed background' ) }
