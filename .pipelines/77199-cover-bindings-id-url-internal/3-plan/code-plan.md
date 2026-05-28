@@ -17,6 +17,8 @@ Land internal-only Block Bindings support for `core/cover`'s `id` and `url` attr
 
 Each task lists files (CREATE/MODIFY), atomic changes, the spec/design slices it traces to, dependencies, and observable acceptance. Code-writers implement each task TDD-style: write failing tests first, then the production code, then refactor — the per-task acceptance bullets describe *what* must be true, not *which* test files (the code-writer chooses the test files).
 
+**Coverage note (per iter-2 review Issue 8).** Every spec requirement traces to at least one task. Req 28 ("no new global Block Bindings APIs") is a design-level invariant — the design doc selects Approach A (Cover-scoped filters) explicitly to satisfy it, and there is no task to add because there is nothing to build — it is an architectural prohibition enforced by the absence of any new global API across Tasks 1–13. Reviewers verifying Req 28 should check that the diff introduces no `register_*` calls beyond the standard `add_filter( 'block_bindings_supported_attributes', … )` (Task 2) and the two Cover-scoped `add_filter( 'render_block_data' … )` / `add_filter( 'render_block', … 9, 3 )` registrations (Tasks 4 and 5) — none of which is a new global API.
+
 ---
 
 ## Tasks
@@ -63,7 +65,7 @@ Each task lists files (CREATE/MODIFY), atomic changes, the spec/design slices it
 
 **Depends on**: Task 1
 
-**Traces to**: Spec Req 2, Req 8, AC-1, AC-2; Design §6.1 Part 1, §8, §2.2.
+**Traces to**: Spec Req 2, Req 8, Req 9 (Pattern Overrides controls — "Enable overrides" affordance and `<ResetOverridesControl>` — work automatically once the cover is allow-listed via this filter, with no Cover-specific UI code); AC-1, AC-2; Design §6.1 Part 1, §8, §2.2.
 
 **Acceptance**:
 - `lib/compat/wordpress-7.1/block-bindings.php` exists and is loaded by `lib/load.php`.
@@ -192,31 +194,55 @@ Each task lists files (CREATE/MODIFY), atomic changes, the spec/design slices it
 - `packages/block-library/src/cover/edit/use-cover-binding-state.js` — CREATE.
 
 **Changes**:
-1. New file exporting a default function: `export default function useCoverBindingState( { clientId, attributes, context } ) { … }`.
-2. Imports: `replacePatternOverridesDefaultBinding` from `@wordpress/block-editor` (`utils/block-bindings`), `getBlockBindingsSource` from `@wordpress/blocks`, `useSelect` from `@wordpress/data`, `store as coreStore` from `@wordpress/core-data`.
-3. Body:
-   - Read `attributes.metadata?.bindings`. If absent, return `{ bindingActive: false, bindingUnresolvable: false, bindingResolvedUrl: undefined, bindingResolvedId: undefined, canUserEditBindingValue: false }` early.
-   - Call `const expanded = replacePatternOverridesDefaultBinding( bindings, [ 'id', 'url' ] );`.
+1. New file exporting a default function with signature `export default function useCoverBindingState( { clientId, attributes, context } ) { … }`. The `context` parameter is the full, undestructured context object (see Task 7 step 2 for the prop-boundary change in `CoverEdit` that produces it). Do NOT reconstruct a partial `{ postId, postType }` shape — binding sources may declare `usesContext` for additional keys and need the full object.
+2. Imports:
+   - `getBlockBindingsSource` from `@wordpress/blocks`
+   - `useSelect` from `@wordpress/data`
+   - `store as coreStore` from `@wordpress/core-data`
+   - Do NOT import `replacePatternOverridesDefaultBinding` from `@wordpress/block-editor`. It is NOT publicly re-exported from the package (verified: `packages/block-editor/src/index.js` re-exports `./utils` and `./utils/index.js` re-exports only `transformStyles` and `getPxFromCssUnit`; the helper at `packages/block-editor/src/utils/block-bindings.js:27` is consumed in-tree only via the relative path `../../utils/block-bindings`). Importing it from `@wordpress/block-editor` would fail to resolve.
+3. Re-implement `__default` expansion inline in this file as a tiny module-local helper (chosen resolution per iter-2 review Issue 1, option (c)). This duplicates ~10 lines of `packages/block-editor/src/utils/block-bindings.js:1-46` but avoids both (a) a cross-package public-API change to re-export the helper and (b) the private-APIs `lock`/`unlock` plumbing required to reach it through the channel `block-editor/src/components/block-edit/edit.js:28` uses (`import { unlock } from '../../lock-unlock'` is itself a private hatch into the package — not a stable cross-package contract). The DRY cost is bounded because the helper is small, has no internal dependencies beyond two string constants, and has been stable in trunk since Pattern Overrides shipped:
+
+   ```js
+   const PATTERN_OVERRIDES_SOURCE = 'core/pattern-overrides';
+   function expandDefaultBinding( bindings, supportedAttributes ) {
+       if ( bindings?.__default?.source !== PATTERN_OVERRIDES_SOURCE ) {
+           return bindings;
+       }
+       const expanded = {};
+       for ( const attr of supportedAttributes ) {
+           expanded[ attr ] = bindings[ attr ]
+               ? bindings[ attr ]
+               : { source: PATTERN_OVERRIDES_SOURCE };
+       }
+       return expanded;
+   }
+   ```
+
+   Place this above the hook body. Add a one-line code comment that points at `packages/block-editor/src/utils/block-bindings.js` so a future reader knows where the canonical implementation lives and the divergence risk is acknowledged. If Core later promotes the helper to a public re-export (a separate, owner-gated decision), this duplication becomes a one-line swap.
+4. Body:
+   - Read `const bindings = attributes.metadata?.bindings;`. If absent, return `{ bindingActive: false, bindingUnresolvable: false, bindingResolvedUrl: undefined, bindingResolvedId: undefined, canUserEditBindingValue: false }` early.
+   - Call `const expanded = expandDefaultBinding( bindings, [ 'id', 'url' ] );` (the local helper from step 3).
    - Compute `bindingActive` per Design §5.1 step 2: both `expanded.id` and `expanded.url` are present, same `source`, `JSON.stringify( expanded.id.args ?? null ) === JSON.stringify( expanded.url.args ?? null )`, AND `attributes.backgroundType !== 'embed-video'`.
-   - Single `useSelect` (Design §5.1 step 3): when `bindingActive`, look up the source via `getBlockBindingsSource( expanded.url.source )`, call `source.getValues( { select, clientId, context, bindings: { id: expanded.id, url: expanded.url } } )`, then if `values.id` is truthy, also call `select( coreStore ).getEntityRecord( 'postType', 'attachment', values.id, { context: 'view' } )`. Return `{ bindingResolvedUrl, bindingResolvedId, bindingResolvedAttachment }` from the closure.
-   - Dependency array: `[ bindingActive, expanded?.id?.source, expanded?.url?.source, clientId ]`.
+   - Single `useSelect` (Design §5.1 step 3): when `bindingActive`, look up the source via `getBlockBindingsSource( expanded.url.source )`, call `source.getValues( { select, clientId, context, bindings: { id: expanded.id, url: expanded.url } } )`, then if `values.id` is truthy, also call `select( coreStore ).getEntityRecord( 'postType', 'attachment', values.id, { context: 'view' } )`. Return `{ bindingResolvedUrl, bindingResolvedId, bindingResolvedAttachment }` from the closure. Pass `context` through as the full object received from the hook's argument (NOT a reconstructed partial).
+   - Dependency array: `[ bindingActive, expanded?.id?.source, expanded?.url?.source, clientId, context ]`.
    - Compute `bindingUnresolvable`:
      - `true` if `bindings` has any cover-relevant configuration (`bindings.__default` exists, OR `bindings.id` exists, OR `bindings.url` exists) AND `! bindingActive` — i.e. malformed/mismatched binding.
      - OR `true` if `bindingActive && bindingResolvedAttachment === null` (resolved-not-found; remember `undefined` means pending — NOT unresolvable).
      - OR `true` if `bindingActive && bindingResolvedAttachment?.type && bindingResolvedAttachment.type !== 'attachment'`.
    - Compute `canUserEditBindingValue` from the source: `getBlockBindingsSource( expanded.url.source )?.canUserEditValue?.( … ) ?? false`. (Used for future lock-flag wiring; safe to return `false` if not applicable.)
    - Return `{ bindingActive, bindingUnresolvable, bindingResolvedUrl, bindingResolvedId, canUserEditBindingValue }`.
-4. The hook returns plain values. No memoised React elements, no `useEffect`.
+5. The hook returns plain values. No memoised React elements, no `useEffect`.
 
 **Depends on**: Task 2 (the editor setting `__experimentalBlockBindingsSupportedAttributes['core/cover']` must include `id`/`url`).
 
-**Traces to**: Spec Req 10, Req 25, Req 26, Req 27; AC-3, AC-4, AC-6, AC-21; DC-1, DC-3; Design §5.1, §5.6 (Pattern Overrides integration via `replacePatternOverridesDefaultBinding`).
+**Traces to**: Spec Req 9, Req 10, Req 25, Req 26, Req 27; AC-3, AC-4, AC-6, AC-21; DC-1, DC-3; Design §5.1, §5.6 (Pattern Overrides integration via the inline-duplicated `__default` expansion that mirrors `replacePatternOverridesDefaultBinding`).
 
 **Acceptance**:
 - Called with `attributes.metadata.bindings === undefined`: returns `bindingActive: false`, `bindingUnresolvable: false`.
-- Called with `attributes.metadata.bindings = { __default: { source: 'core/pattern-overrides' } }`: returns `bindingActive: true`.
+- Called with `attributes.metadata.bindings = { __default: { source: 'core/pattern-overrides' } }`: returns `bindingActive: true`. (Confirms inline `__default` expansion works.)
 - Called with `attributes.metadata.bindings = { id: { source: 'x' }, url: { source: 'y' } }`: returns `bindingActive: false, bindingUnresolvable: true`.
 - Called with `attributes.metadata.bindings = { id: { source: 'x' }, url: { source: 'x' } }` AND `attributes.backgroundType = 'embed-video'`: returns `bindingActive: false` (embed-video override).
+- The hook does NOT import from `@wordpress/block-editor`'s `utils/block-bindings` path (which is not publicly re-exported). The `__default` expansion is implemented inline in this file.
 - The hook subscribes via exactly ONE `useSelect`. (Verifiable by code review / by counting `useSelect` calls in the file.)
 - The hook does NOT call `useEffect`. (Verifiable by code review.)
 - When `bindingActive` is true but the attachment record is loading (selector returns `undefined`), `bindingUnresolvable` is `false` (treated as pending, not unresolvable).
@@ -235,21 +261,38 @@ Each task lists files (CREATE/MODIFY), atomic changes, the spec/design slices it
 1. Add imports at the top of the file:
    - `import useCoverBindingState from './use-cover-binding-state';`
    - Ensure `useEffectEvent`, `useRef`, `useEffect` are imported from `@wordpress/element` (some may already be present).
-2. Inside `CoverEdit` body, after the existing props/state destructuring, before any existing `useEffect`:
+2. **Prop-boundary change for `context`** — `CoverEdit` currently destructures `context: { postId, postType }` in its props signature (verified at `packages/block-library/src/cover/edit/index.js:95`), so there is no `context` identifier in scope. Change the destructuring to keep `context` undestructured AND keep `postId`/`postType` available:
+   ```js
+   function CoverEdit( {
+       attributes,
+       clientId,
+       isSelected,
+       overlayColor,
+       setAttributes,
+       setOverlayColor,
+       toggleSelection,
+       context,
+   } ) {
+       const { postId, postType } = context;
+       …
+   }
+   ```
+   Existing references to `postId` / `postType` (e.g. the `useEntityProp( 'postType', postType, 'featured_media', postId )` call at line ~119) continue to work unchanged because the new destructure declares the same identifiers. The hook receives the full, undestructured `context` object — sources may declare `usesContext` for keys beyond `postId`/`postType` and need access to them.
+3. Inside `CoverEdit` body, after the existing props/state destructuring, before any existing `useEffect`:
    - `const { bindingActive, bindingUnresolvable, bindingResolvedUrl, bindingResolvedId, canUserEditBindingValue } = useCoverBindingState( { clientId, attributes, context } );`
    - `const raceTokenRef = useRef( 0 );`
-3. Compute `effectiveUrl`:
+4. Compute `effectiveUrl`:
    ```js
    const effectiveUrl =
        bindingResolvedUrl ??
        ( useFeaturedImage ? mediaUrl : originalUrl?.replaceAll( '&amp;', '&' ) );
    ```
-4. Compute `effectiveDimRatio`:
+5. Compute `effectiveDimRatio`:
    ```js
    const effectiveDimRatio =
        bindingActive && dimRatio === 100 && effectiveUrl ? 50 : dimRatio;
    ```
-5. Replace the existing `useEffect( () => { /* getMediaColor on mediaUrl */ }, [ mediaUrl ] )` block with:
+6. Replace the existing `useEffect( () => { /* getMediaColor on mediaUrl */ }, [ mediaUrl ] )` block with:
    - `const onUrlResolved = useEffectEvent( async ( resolvedUrl ) => { … } );` whose body:
      1. Returns early if `! resolvedUrl`.
      2. Increments `raceTokenRef.current` into a local `myToken`.
@@ -260,8 +303,8 @@ Each task lists files (CREATE/MODIFY), atomic changes, the spec/design slices it
      7. Compute `newIsDark` from `compositeIsDark( …, … , avg )` using `effectiveDimRatio`-equivalent latest values per Design §5.2.
      8. `__unstableMarkNextChangeAsNotPersistent()` + `setAttributes( { isDark: newIsDark } )` (allowed; `isDark` is NOT in DC-2's prohibition list).
    - One `useEffect( () => { onUrlResolved( effectiveUrl ); }, [ effectiveUrl, onUrlResolved ] );`.
-6. The existing event handlers (`onSelectMedia`, `onClearMedia`, `onSetOverlayColor`, `onUpdateDimRatio`, `toggleUseFeaturedImage`, `onSelectEmbedUrl`) are UNCHANGED — they continue to mutate stored attributes in response to user intent (allowed under DC-2).
-7. The overlay-span class computation MUST use `effectiveDimRatio` rather than `dimRatio` in `dimRatioToClass( … )` (verify the JSX site exists; trunk code references the overlay `<span>` near the dim-class computation — pass `effectiveDimRatio` through).
+7. The existing event handlers (`onSelectMedia`, `onClearMedia`, `onSetOverlayColor`, `onUpdateDimRatio`, `toggleUseFeaturedImage`, `onSelectEmbedUrl`) are UNCHANGED — they continue to mutate stored attributes in response to user intent (allowed under DC-2).
+8. The overlay-span class computation MUST use `effectiveDimRatio` rather than `dimRatio` in `dimRatioToClass( … )` (verify the JSX site exists; trunk code references the overlay `<span>` near the dim-class computation — pass `effectiveDimRatio` through).
 
 **Depends on**: Task 6
 
@@ -271,7 +314,7 @@ Each task lists files (CREATE/MODIFY), atomic changes, the spec/design slices it
 - The file contains exactly ONE `useEffect` whose dependency array includes `effectiveUrl`. No new `useEffect` keyed on `metadata.bindings`, `useFeaturedImage`, or similar event sources is introduced. (DC-1 enforcement — verifiable by code review.)
 - `effectiveUrl` is computed exactly once at the top of `CoverEdit`, prefers `bindingResolvedUrl`, falls back to `useFeaturedImage`'s `mediaUrl`, then to `originalUrl`.
 - `effectiveDimRatio` is 50 only when `bindingActive && dimRatio === 100 && effectiveUrl`. In all other cases it equals `dimRatio`.
-- The observer body does NOT call `setAttributes` for `dimRatio`, `useFeaturedImage`, `backgroundType`, `id`, `url`, `hasParallax`, `isRepeated`, or `customOverlayColor`. The only attribute write inside the observer is `isDark`. (DC-2 enforcement — verifiable by inspection.)
+- The observer body does NOT call `setAttributes` (or any equivalent attribute write) for any of the DC-2-prohibited attributes — `dimRatio`, `useFeaturedImage`, `backgroundType`, `id`, `url`, `hasParallax`, `isRepeated`, `overlayColor`, `customOverlayColor` — EXCEPT for `overlayColor`/`customOverlayColor`, whose mutation via `setOverlayColor( avg )` is a deliberate source-agnostic carve-out per Design §5.2/§5.3: it is the same media-resolution path that fires for manual selection and `useFeaturedImage` URLs, NOT a fresh binding-state-triggered write. Per DC-3 the observer cannot branch on URL source, so this `setOverlayColor` call IS the source-agnostic continuation of trunk behaviour. The only fresh `setAttributes` call inside the observer is `{ isDark }`. (DC-2 enforcement — verifiable by inspection. Acceptance for Task 11 has a corresponding mock-setAttributes test.)
 - When two `effectiveUrl` changes happen in quick succession, only the latest `getMediaColor` resolution actually writes `overlayColor` / `isDark` (race-token-protected).
 - The overlay span class uses `dimRatioToClass( effectiveDimRatio )` rather than `dimRatioToClass( dimRatio )`.
 
@@ -294,10 +337,11 @@ Each task lists files (CREATE/MODIFY), atomic changes, the spec/design slices it
      - If `bindingUnresolvable`, render `<Placeholder data-testid="cover-binding-unresolvable" className="wp-block-cover__binding-unresolvable" withIllustration instructions={ __( 'Internal media required for this binding.' ) } />`.
      - Else (bindingActive but pending resolution), render `<Placeholder className="wp-block-cover__binding-pending" withIllustration />`.
    - Else fall through to the existing trunk `<CoverPlaceholder>` return — UNCHANGED.
-2. In the non-empty image render branch (around `url && isImageBackground`):
-   - Add the `! bindingUnresolvable` predicate so the image element is never emitted for unresolvable bindings.
-   - When `bindingActive`, force-render `<img ref={ mediaElement } className="wp-block-cover__image-background" alt={ alt } src={ effectiveUrl } style={ mediaStyle } />` (skipping the `isImgElement` check that would otherwise pick a `<div>` for parallax/repeat saved markup).
-   - When `! bindingActive`, the existing trunk JSX (with `isImgElement` switching between `<img>` and `<div>`) is preserved verbatim.
+2. In the non-empty image render branch (around `url && isImageBackground` near line 672):
+   - **Swap the outer gating predicate from the stored `url` to the derived `effectiveUrl`, AND add the `! bindingUnresolvable` guard.** Concretely, rewrite the predicate `{ url && isImageBackground && ( … ) }` to `{ ! bindingUnresolvable && effectiveUrl && isImageBackground && ( … ) }`. This is a Pattern-Overrides-critical change — per Design §5.4 (2) — because on a pattern-instance Cover whose stored `url` is empty (e.g. immediately after a Pattern Overrides reset that cleared the override, or when the synced pattern was authored with no default) but whose `bindingResolvedUrl` is populated, gating on the stored `url` would route the cover through the empty-cover branch and AC-7 would fail. Gating on `effectiveUrl` keeps the bound `<img>` rendering through the branch.
+   - Inside the (now `effectiveUrl`-gated) branch, switch on `bindingActive`:
+     - When `bindingActive`, force-render `<img ref={ mediaElement } className="wp-block-cover__image-background" alt={ alt } src={ effectiveUrl } style={ mediaStyle } />` (skipping the `isImgElement` check that would otherwise pick a `<div>` for parallax/repeat saved markup).
+     - When `! bindingActive`, the existing trunk JSX (with `isImgElement` switching between `<img>` and `<div>`, and reading `src={ url }`) is preserved verbatim. Importantly, this branch continues to read the stored `url`, NOT `effectiveUrl`, on unbound covers — `effectiveUrl` collapses to `url` when no binding is active (per Task 7 step 4), so the user-observable output is byte-identical to trunk on unbound covers (AC-20).
 3. The overlay span: pass `effectiveDimRatio` to `dimRatioToClass` (this is the same change as in Task 7 step 7 — Task 7 establishes the derived value; Task 8 confirms the call site).
 4. Import `__` from `@wordpress/i18n` if not already imported (it almost certainly already is).
 5. Import `Placeholder` from `@wordpress/components` if not already imported.
@@ -309,6 +353,7 @@ Each task lists files (CREATE/MODIFY), atomic changes, the spec/design slices it
 **Acceptance**:
 - On a Cover with no bindings and no background, the existing `<CoverPlaceholder>` renders (no regression — AC-20).
 - On a Cover with `bindingUnresolvable: true`, the editor preview contains a `<Placeholder>` whose accessible text includes the literal string `Internal media required for this binding.`. Its containing element has `data-testid="cover-binding-unresolvable"`. No `<img class="wp-block-cover__image-background">` is rendered.
+- The non-empty image branch's outer gating predicate uses `effectiveUrl`, NOT the stored `url`. A Cover whose stored `url === ''` but whose `bindingResolvedUrl` is populated (the Pattern Overrides default state on a pattern-instance) reaches the image branch and renders the bound `<img>` (AC-7).
 - On a Cover with `bindingActive: true`, `bindingUnresolvable: false`, and an `effectiveUrl`, the editor preview contains `<img class="wp-block-cover__image-background" src="{effectiveUrl}">` (an `<img>`, not a `<div style="background-image:…">`), even when `hasParallax: true` and `isRepeated: true` are stored on the block.
 - The overlay `<span class="wp-block-cover__background …">` class string uses `effectiveDimRatio` for `dimRatioToClass` — when `dimRatio === 100 && bindingActive && effectiveUrl`, the class string does NOT contain `has-background-dim-100`.
 - On a Cover with `backgroundType: 'embed-video'` and `metadata.bindings` set, `bindingActive` is `false` (from Task 6) → the binding-aware branches do NOT engage and the existing embed-video render path runs unchanged (AC-21).
@@ -376,12 +421,12 @@ In `index.js`:
 
 **Depends on**: Task 5 (the server filter must exist and be loaded).
 
-**Traces to**: Spec Req 17–22, AC-3, AC-5, AC-6, AC-15, AC-16, AC-17, AC-18, AC-19, AC-20, AC-21, AC-25; Design §6.5, §11.2.
+**Traces to**: Spec Req 17–22, Req 23 (Unbound non-regression invariant locked down by `test_unbound_cover_is_byte_identical_to_trunk`), Req 34 (PHPUnit case asserting bound `<img src>` substitution and non-`has-background-dim-100` class), Req 35 (existing tests continue to pass); AC-3, AC-5, AC-6, AC-15, AC-16, AC-17, AC-18, AC-19, AC-20, AC-21, AC-25; Design §6.5, §11.2.
 
 **Acceptance**:
 - All nine new test methods pass.
 - `vendor/bin/phpunit phpunit/blocks/render-block-cover-test.php` exits 0 with no failures and no skipped tests.
-- The pre-existing test methods in `render-block-cover-test.php` continue to pass (AC-20, AC-35 non-regression).
+- The pre-existing test methods in `render-block-cover-test.php` continue to pass (AC-20, Req 35 non-regression).
 - The `test_use_featured_image_with_active_binding_emits_exactly_one_img_with_bound_url` case asserts the bound URL appears in the output exactly once and the featured-image URL does not appear at all (catches AC-18 regressions in either direction).
 - The `test_default_dim_ratio_class_is_relaxed` case asserts BOTH the absence of `has-background-dim-100` AND the presence of `has-background-dim` (preserves the 50%-opacity baseline per OQ-4).
 
@@ -413,12 +458,12 @@ In `index.js`:
 
 **Depends on**: Task 6, Task 7
 
-**Traces to**: Spec Req 10, Req 11, Req 13, Req 26; AC-3, AC-4, AC-6; DC-1, DC-2, DC-3; Design §5.1, §5.2, §11.1.
+**Traces to**: Spec Req 10, Req 11, Req 13, Req 26, Req 35 (existing edit.js tests continue to pass); AC-3, AC-4, AC-6; DC-1, DC-2, DC-3; Design §5.1, §5.2, §11.1.
 
 **Acceptance**:
 - All new test cases pass.
 - `npm run test:unit packages/block-library/src/cover/test/edit.js` exits 0.
-- The pre-existing edit.js tests continue to pass (AC-35 non-regression).
+- The pre-existing edit.js tests continue to pass (Req 35 non-regression).
 - The DC-2 mutation-prohibition test fails the build if a future change introduces `setAttributes({ dimRatio: … })` in the observer.
 
 ---
@@ -445,6 +490,7 @@ In `index.js`:
      - `page.getByRole('button', { name: /^(Replace|Add media)$/ })` resolves to zero matches inside the Cover's block toolbar (AC-13 + AC-14).
      - The overlay span's `class` attribute contains `has-background-dim` but NOT `has-background-dim-100` (AC-15).
      - The `ResetOverridesControl` toolbar button is `toBeDisabled()` (AC-10, OQ-2).
+     - **Embed-video control case (AC-21 preservation, per Design §11.3):** on a SEPARATE Cover inserted in the same post with `backgroundType: 'embed-video'` AND `metadata.bindings` set to a Pattern Overrides shape, assert that the block toolbar `Replace` / `Add media` button IS visible AND the "Embed video from URL" `MenuItem` inside `<MediaReplaceFlow>` IS reachable. This locks in the design's load-bearing carve-out: bindings UI may surface bindable rows on embed-video covers but the binding-aware editor derivations and binding-aware server render path BOTH short-circuit (`bindingActive === false` from Task 6's embed-video gate), so the existing trunk affordances remain intact.
    - **Override**: programmatically set the bound `url`/`id` on the instance (via `editor.dispatch` or by using the Cover's media affordance if available). Assert:
      - The `ResetOverridesControl` button becomes enabled.
      - Editor preview `<img>` src matches `overrideMedia.url`.
@@ -459,13 +505,14 @@ In `index.js`:
 
 **Depends on**: Tasks 1–9 (the entire feature must be present and working server-side AND client-side before this test passes).
 
-**Traces to**: Spec Req 29, Req 30, Req 31, Req 32, Req 33; AC-7, AC-8, AC-9, AC-10, AC-11, AC-12, AC-13, AC-14, AC-15, AC-16, AC-22, AC-23, AC-24; Design §11.3.
+**Traces to**: Spec Req 24 (Pattern Overrides four-state round-trip exercised end-to-end through default → override → reset → unresolvable phases), Req 29, Req 30, Req 31, Req 32, Req 33, Req 35 (existing cover.spec.js tests continue to pass); AC-7, AC-8, AC-9, AC-10, AC-11, AC-12, AC-13, AC-14, AC-15, AC-16, AC-21 (embed-video control case), AC-22, AC-23, AC-24; Design §11.3.
 
 **Acceptance**:
 - The new test passes when run via `npm run test:e2e -- test/e2e/specs/editor/blocks/cover.spec.js`.
-- All existing tests in `cover.spec.js` continue to pass (AC-35).
+- All existing tests in `cover.spec.js` continue to pass (Req 35 non-regression).
 - The unresolvable-binding assertion uses the i18n message string `Internal media required for this binding.` (NOT the `data-testid`) — i.e. the primary OQ-6 contract.
 - The hidden-controls assertions are positive ("zero matches") — they fail loudly if any control reappears.
+- The embed-video control case asserts the `Replace`/`Add media` button IS present AND the `Embed video from URL` `MenuItem` IS reachable on a Cover with `backgroundType: 'embed-video'` and active-looking bindings — this is the AC-21 positive assertion the design (§11.3) calls for.
 
 ---
 
@@ -478,11 +525,13 @@ In `index.js`:
 - (No file output for the PR description; the code-writer composes it in the GitHub PR body.)
 
 **Changes**:
-1. Create `backport-changelog/7.1/<core-pr-number>.md` containing the single line:
+1. Create `backport-changelog/7.1/<core-pr-number>.md` containing the established two-line format (verified against existing entries — e.g. `backport-changelog/7.1/10869.md` has exactly this shape):
    ```
+   https://github.com/WordPress/wordpress-develop/pull/<core-pr-number>
+
    * https://github.com/WordPress/gutenberg/pull/<gutenberg-pr-number>
    ```
-   per the established `backport-changelog` format (verify against existing entries in `backport-changelog/7.1/`).
+   Line 1 is the bare wordpress-develop URL (must match the filename's PR number). Line 2 is blank. Line 3 is the bulleted Gutenberg PR URL. No surrounding blank line, no closing newline beyond standard end-of-file. The filename's numeric portion (`<core-pr-number>.md`) MUST match the PR number in line 1.
 2. In the PR description (composed in the GitHub PR body), include:
    - The text "Fixes #77199" (AC-27).
    - An explicit statement of the relationship to #74109 and #74610: "This PR subsumes the work of #74109 and #74610, replacing them with a narrowly-scoped, internal-only design. Those PRs may be closed." (AC-27; phrasing may vary, but the explicit relationship statement is mandatory.)
@@ -493,7 +542,7 @@ In `index.js`:
 **Traces to**: Spec Req 36, Req 37, Req 38, Req 39; AC-26, AC-27, AC-28; Design §12.
 
 **Acceptance**:
-- A file exists at `backport-changelog/7.1/<core-pr-number>.md` (or a `TODO`-named placeholder) and follows the established 7.1 backport entry format.
+- A file exists at `backport-changelog/7.1/<core-pr-number>.md` (or a `TODO`-named placeholder) and follows the established 7.1 backport entry two-line format (line 1: `https://github.com/WordPress/wordpress-develop/pull/<core-pr-number>`; blank line; line 3: `* https://github.com/WordPress/gutenberg/pull/<gutenberg-pr-number>`), matching the shape of every other entry in `backport-changelog/7.1/`.
 - The Gutenberg PR description (when opened) contains the literal text `Fixes #77199` and explicitly references #74109 and #74610.
 - The total net diff (additions − deletions, across Tasks 1–13) is targeted at ~500 lines — verified after all tasks land by `git diff --stat trunk...HEAD`. The design's §12 estimate of ~533 lines is the budget; reviewers may request trimming the e2e block per Design §12 if the diff overshoots.
 - No file is created under `lib/compat/wordpress-7.0/` (AC-26 negative invariant).
