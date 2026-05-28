@@ -5,6 +5,14 @@ import { screen, fireEvent, act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 /**
+ * WordPress dependencies
+ */
+import {
+	registerBlockBindingsSource,
+	unregisterBlockBindingsSource,
+} from '@wordpress/blocks';
+
+/**
  * Internal dependencies
  */
 import {
@@ -468,6 +476,175 @@ describe( 'Cover block', () => {
 			} );
 			await userEvent.click( popupColorPicker );
 			expect( coverBlock ).not.toHaveClass( 'is-light' );
+		} );
+	} );
+
+	describe( 'Bindings rendering', () => {
+		const TEST_SOURCE = 'test/cover-binding-edit';
+		const TEST_RESOLVED_URL = 'http://localhost/bound-image.jpg';
+		const TEST_RESOLVED_ID = 4242;
+
+		// Mutable state read by the test source's `getValues` so individual
+		// tests can dial the resolved URL / ID without re-registering.
+		const sourceState = {
+			url: TEST_RESOLVED_URL,
+			id: TEST_RESOLVED_ID,
+		};
+
+		beforeEach( () => {
+			sourceState.url = TEST_RESOLVED_URL;
+			sourceState.id = TEST_RESOLVED_ID;
+			registerBlockBindingsSource( {
+				name: TEST_SOURCE,
+				label: 'Test cover binding source',
+				getValues: () => ( {
+					id: sourceState.id,
+					url: sourceState.url,
+				} ),
+				canUserEditValue: () => false,
+			} );
+		} );
+
+		afterEach( () => {
+			unregisterBlockBindingsSource( TEST_SOURCE );
+		} );
+
+		const boundBindings = {
+			id: { source: TEST_SOURCE },
+			url: { source: TEST_SOURCE },
+		};
+
+		test( 'renders a binding-aware placeholder with the unresolvable copy when bindings are mismatched', async () => {
+			// Mismatched sources on `id` vs `url` yield `bindingActive=false`
+			// but `bindingUnresolvable=true` (cover-relevant bindings exist
+			// yet do not satisfy the active-binding predicate).
+			await setup( {
+				metadata: {
+					bindings: {
+						id: { source: TEST_SOURCE },
+						url: { source: 'test/other-source' },
+					},
+				},
+			} );
+
+			const coverBlock = screen.getByLabelText( 'Block: Cover' );
+
+			expect(
+				within( coverBlock ).getByText(
+					'Internal media required for this binding.'
+				)
+			).toBeInTheDocument();
+
+			expect(
+				within( coverBlock ).getByTestId( 'cover-binding-unresolvable' )
+			).toBeInTheDocument();
+
+			expect(
+				// eslint-disable-next-line testing-library/no-node-access
+				coverBlock.querySelector(
+					'img.wp-block-cover__image-background'
+				)
+			).not.toBeInTheDocument();
+		} );
+
+		test( 'force-renders an <img> for an active binding with a resolved URL, ignoring hasParallax / isRepeated', async () => {
+			await setup( {
+				url: 'http://localhost/stored-image.jpg',
+				backgroundType: 'image',
+				hasParallax: true,
+				isRepeated: true,
+				metadata: { bindings: boundBindings },
+			} );
+
+			const boundImg = await screen.findByRole( 'img' );
+
+			expect( boundImg ).toHaveClass(
+				'wp-block-cover__image-background'
+			);
+			expect( boundImg ).toHaveAttribute( 'src', TEST_RESOLVED_URL );
+
+			// The force-img branch never picks up the parallax/repeat <div>
+			// markup; assert that the alternative <div> background does NOT
+			// appear in the rendered tree.
+			expect(
+				// eslint-disable-next-line testing-library/no-node-access
+				document.querySelector( 'div.wp-block-cover__image-background' )
+			).not.toBeInTheDocument();
+		} );
+
+		test( 'reaches the image branch via effectiveUrl even when the stored url is empty', async () => {
+			// Pattern-Overrides-shaped state: the stored `url` is empty but
+			// the bound source provides a populated URL via `effectiveUrl`.
+			// A `customOverlayColor` keeps `hasBackground=true` so the cover
+			// renders its main JSX path (where the image branch lives)
+			// rather than the empty-cover branch.
+			await setup( {
+				url: '',
+				backgroundType: 'image',
+				customOverlayColor: '#abcdef',
+				metadata: { bindings: boundBindings },
+			} );
+
+			const coverBlock = screen.getByLabelText( 'Block: Cover' );
+
+			const boundImg = await within( coverBlock ).findByRole( 'img' );
+
+			expect( boundImg ).toHaveClass(
+				'wp-block-cover__image-background'
+			);
+			expect( boundImg ).toHaveAttribute( 'src', TEST_RESOLVED_URL );
+		} );
+
+		test( 'omits has-background-dim-100 on the overlay when dimRatio === 100 and the binding resolves a URL', async () => {
+			const { container } = await setup( {
+				url: 'http://localhost/stored-image.jpg',
+				backgroundType: 'image',
+				dimRatio: 100,
+				metadata: { bindings: boundBindings },
+			} );
+
+			// The bound `<img>` proves the active-binding path engaged.
+			await screen.findByRole( 'img' );
+
+			// eslint-disable-next-line testing-library/no-node-access
+			const overlay = container.getElementsByClassName(
+				'wp-block-cover__background'
+			)[ 0 ];
+
+			expect( overlay ).toBeInTheDocument();
+			expect( overlay ).not.toHaveClass( 'has-background-dim-100' );
+		} );
+
+		test( 'leaves the embed-video render path engaged on a cover with bindings (binding is inert)', async () => {
+			await setup( {
+				url: 'https://example.com/video',
+				backgroundType: 'embed-video',
+				metadata: { bindings: boundBindings },
+			} );
+
+			const coverBlock = screen.getByLabelText( 'Block: Cover' );
+
+			// `bindingActive` is forced to `false` for embed-video covers, so
+			// the binding-aware placeholder must NOT engage inside the cover.
+			expect(
+				within( coverBlock ).queryByText(
+					'Internal media required for this binding.'
+				)
+			).not.toBeInTheDocument();
+
+			expect(
+				within( coverBlock ).queryByTestId(
+					'cover-binding-unresolvable'
+				)
+			).not.toBeInTheDocument();
+
+			// Likewise, the force-img branch must not fire.
+			expect(
+				// eslint-disable-next-line testing-library/no-node-access
+				coverBlock.querySelector(
+					'img.wp-block-cover__image-background'
+				)
+			).not.toBeInTheDocument();
 		} );
 	} );
 } );

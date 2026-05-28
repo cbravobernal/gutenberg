@@ -120,12 +120,14 @@ function CoverEdit( {
 	} = attributes;
 
 	// Single source of truth for binding state. Drives the derived values
-	// (`effectiveUrl`, `effectiveDimRatio`) below.
-	const { bindingActive, bindingResolvedUrl } = useCoverBindingState( {
-		clientId,
-		attributes,
-		context,
-	} );
+	// (`effectiveUrl`, `effectiveDimRatio`) and the binding-aware render
+	// branches below.
+	const { bindingActive, bindingUnresolvable, bindingResolvedUrl } =
+		useCoverBindingState( {
+			clientId,
+			attributes,
+			context,
+		} );
 
 	// Race-token guard for the source-agnostic `effectiveUrl` observer below.
 	// Incremented on each invocation; stale `getMediaColor` resolutions bail
@@ -659,6 +661,52 @@ function CoverEdit( {
 	};
 
 	if ( ! useFeaturedImage && ! hasInnerBlocks && ! hasBackground ) {
+		if ( bindingActive || bindingUnresolvable ) {
+			// Bound covers never expose the upload / featured-image
+			// affordances surfaced by the standard `<CoverPlaceholder>`.
+			// When the binding has settled into an unresolvable state we
+			// surface a discoverable affordance ("Internal media required
+			// for this binding."); otherwise the placeholder is silent and
+			// the single observer will populate the cover once
+			// `effectiveUrl` arrives.
+			return (
+				<>
+					{ blockControls }
+					{ inspectorControls }
+					{ hasNonContentControls && isSelected && (
+						<ResizableCoverPopover { ...resizableCoverProps } />
+					) }
+					<TagName
+						{ ...blockProps }
+						className={ clsx(
+							'is-placeholder',
+							blockProps.className
+						) }
+						style={ {
+							...blockProps.style,
+							minHeight: minHeightWithUnit || undefined,
+						} }
+					>
+						{ resizeListener }
+						{ bindingUnresolvable ? (
+							<Placeholder
+								data-testid="cover-binding-unresolvable"
+								className="wp-block-cover__binding-unresolvable"
+								withIllustration
+								instructions={ __(
+									'Internal media required for this binding.'
+								) }
+							/>
+						) : (
+							<Placeholder
+								className="wp-block-cover__binding-pending"
+								withIllustration
+							/>
+						) }
+					</TagName>
+				</>
+			);
+		}
 		return (
 			<>
 				{ blockControls }
@@ -731,28 +779,49 @@ function CoverEdit( {
 					/>
 				) }
 
-				{ url &&
-					isImageBackground &&
-					( isImgElement ? (
-						<img
-							ref={ mediaElement }
-							className="wp-block-cover__image-background"
-							alt={ alt }
-							src={ url }
-							style={ mediaStyle }
-						/>
-					) : (
-						<div
-							ref={ mediaElement }
-							role={ alt ? 'img' : undefined }
-							aria-label={ alt ? alt : undefined }
-							className={ clsx(
-								classes,
-								'wp-block-cover__image-background'
+				{ ! bindingUnresolvable &&
+					effectiveUrl &&
+					isImageBackground && (
+						<>
+							{ bindingActive && (
+								// Bound covers ignore the `isImgElement` switch so
+								// that pre-existing `hasParallax`/`isRepeated`
+								// attributes never substitute a `<div>` for the
+								// bound `<img>` (force-off per Design OQ-5).
+								<img
+									ref={ mediaElement }
+									className="wp-block-cover__image-background"
+									alt={ alt }
+									src={ effectiveUrl }
+									style={ mediaStyle }
+								/>
 							) }
-							style={ { backgroundImage, backgroundPosition } }
-						/>
-					) ) }
+							{ ! bindingActive &&
+								( isImgElement ? (
+									<img
+										ref={ mediaElement }
+										className="wp-block-cover__image-background"
+										alt={ alt }
+										src={ url }
+										style={ mediaStyle }
+									/>
+								) : (
+									<div
+										ref={ mediaElement }
+										role={ alt ? 'img' : undefined }
+										aria-label={ alt ? alt : undefined }
+										className={ clsx(
+											classes,
+											'wp-block-cover__image-background'
+										) }
+										style={ {
+											backgroundImage,
+											backgroundPosition,
+										} }
+									/>
+								) ) }
+						</>
+					) }
 				{ url && isVideoBackground && (
 					<video
 						ref={ mediaElement }
