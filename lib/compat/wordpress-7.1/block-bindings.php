@@ -212,3 +212,315 @@ if ( ! function_exists( 'gutenberg_cover_bindings_prepare_block' ) ) {
 }
 
 add_filter( 'render_block_data', 'gutenberg_cover_bindings_prepare_block', 10, 3 );
+
+if ( ! function_exists( 'gutenberg_cover_bindings_strip_image' ) ) {
+	/**
+	 * Removes the saved Cover image element from a rendered Cover block.
+	 *
+	 * The Cover block's `save.js` emits the background image as one of two
+	 * mutually exclusive forms:
+	 *
+	 * 1. A void `<img class="wp-block-cover__image-background" …>` (the
+	 *    non-parallax / non-repeat path).
+	 * 2. A `<div class="wp-block-cover__image-background" style="background-
+	 *    image:url(…)"></div>` (the parallax / repeat path).
+	 *
+	 * This helper locates whichever form is present and splices it out of the
+	 * content. The `<div>` form is probed first because it would otherwise be
+	 * missed by an `<img>`-only regex. If neither pattern matches, the input is
+	 * returned unchanged.
+	 *
+	 * The patterns use the `\b` word-boundary anchor around the class name so
+	 * matches only on elements that actually carry the
+	 * `wp-block-cover__image-background` class (no coincidental substring hits
+	 * on neighbouring attributes), and the `U` (ungreedy) modifier ensures
+	 * `[^>]*` does not run past intermediate `>` boundaries.
+	 *
+	 * Used when an active binding cannot be resolved (no `id`, no `url`, or the
+	 * resolved `id` is not an attachment) — see
+	 * `gutenberg_cover_bindings_render_block` — so the cover renders without an
+	 * image element, overlay-only.
+	 *
+	 * @since 7.1.0
+	 * @access private
+	 *
+	 * @param string $content The rendered Cover block HTML.
+	 * @return string The content with the image element removed, or the input
+	 *                unchanged when no matching element is present.
+	 */
+	function gutenberg_cover_bindings_strip_image( string $content ): string {
+		// Form 2: parallax/repeat saved form — an empty <div>.
+		$form2_pattern = '/<div\s+[^>]*\bwp-block-cover__image-background\b[^>]*><\/div>/U';
+		// Form 1: plain saved form — a void <img> (with or without trailing slash).
+		$form1_pattern = '/<img\s+[^>]*\bwp-block-cover__image-background\b[^>]*\/?\s*>/U';
+
+		foreach ( array( $form2_pattern, $form1_pattern ) as $pattern ) {
+			if ( 1 === preg_match( $pattern, $content, $matches, PREG_OFFSET_CAPTURE ) ) {
+				$start  = $matches[0][1];
+				$length = strlen( $matches[0][0] );
+				return substr( $content, 0, $start ) . substr( $content, $start + $length );
+			}
+		}
+		return $content;
+	}
+}
+
+if ( ! function_exists( 'gutenberg_cover_bindings_relax_dim_class' ) ) {
+	/**
+	 * Removes `has-background-dim-100` from the Cover overlay span when an
+	 * active binding resolved its `id`+`url` and the stored `dimRatio` is the
+	 * default 100.
+	 *
+	 * Stored `dimRatio: 100` is the saved-attribute default for Cover; in the
+	 * pre-bindings universe that translated to a fully-opaque overlay
+	 * (`dim-100` -> 100% opacity), but on bound covers a fully-opaque overlay
+	 * would completely hide the bound image. The chosen "effective" dimRatio
+	 * for that case is 50 (see Design OQ-4), and because
+	 * `dimRatioToClass( 50 ) === null` the rewrite is mechanically "remove
+	 * `has-background-dim-100`" — no replacement modifier class is added. The
+	 * remaining `has-background-dim` class preserves the 50% opacity baseline.
+	 *
+	 * The pass is idempotent: when the class is already absent the call is a
+	 * no-op. The matcher is scoped to `<span class="wp-block-cover__background">`
+	 * elements via the Tag Processor so neighbouring spans are not touched.
+	 *
+	 * @since 7.1.0
+	 * @access private
+	 *
+	 * @param string $content The rendered Cover block HTML.
+	 * @return string The content with `has-background-dim-100` removed from any
+	 *                Cover overlay span, or the input unchanged when no such
+	 *                span is present.
+	 */
+	function gutenberg_cover_bindings_relax_dim_class( string $content ): string {
+		$processor = new WP_HTML_Tag_Processor( $content );
+		while ( $processor->next_tag(
+			array(
+				'tag_name'   => 'SPAN',
+				'class_name' => 'wp-block-cover__background',
+			)
+		) ) {
+			$processor->remove_class( 'has-background-dim-100' );
+		}
+		return $processor->get_updated_html();
+	}
+}
+
+if ( ! function_exists( 'gutenberg_cover_bindings_rewrite_image' ) ) {
+	/**
+	 * Rewrites the saved Cover image element to point at the bound URL/ID.
+	 *
+	 * Handles both forms emitted by `save.js`:
+	 *
+	 * 1. **Parallax / repeat `<div>` form** (probed first via `preg_match`):
+	 *    the entire `<div class="wp-block-cover__image-background" …></div>`
+	 *    is replaced with a freshly-built `<img>` that carries the bound URL,
+	 *    bound ID class (`wp-image-{id}`), and — when stored on the block —
+	 *    `size-{sizeSlug}` and `data-object-position`/`style="object-position:…"`
+	 *    attributes computed from `attrs.focalPoint`. The rebuilt element
+	 *    never contains `has-parallax`, `is-repeated`, or a `style="background-
+	 *    image:…"` declaration by construction. The `alt` attribute is read
+	 *    from the bound attachment's `_wp_attachment_image_alt` meta.
+	 *
+	 * 2. **Plain `<img>` form** (fall-through path): the existing `<img>` is
+	 *    visited via `WP_HTML_Tag_Processor` and `src`, `alt`, and the
+	 *    `wp-image-…` class are rewritten in place. Any pre-existing
+	 *    `wp-image-…` class is removed before the new one is added, so a saved
+	 *    `wp-image-99` does not survive after a binding resolves a different
+	 *    attachment.
+	 *
+	 * The function is idempotent on its own output: a second pass over an
+	 * already-rewritten plain `<img>` form re-asserts the same attributes; a
+	 * second pass over the parallax-rebuilt `<img>` falls through to the
+	 * plain-`<img>` path (because the rebuilt element is now a plain `<img>`)
+	 * and produces byte-identical output.
+	 *
+	 * When neither form matches, the input is returned unchanged.
+	 *
+	 * @since 7.1.0
+	 * @access private
+	 *
+	 * @param string $content      The rendered Cover block HTML.
+	 * @param string $resolved_url The URL resolved from the bound source.
+	 * @param int    $resolved_id  The attachment ID resolved from the bound source.
+	 * @param array  $attrs        The Cover block's stored attribute array
+	 *                             (used for `sizeSlug` and `focalPoint`).
+	 * @return string The content with the image element rewritten, or the input
+	 *                unchanged when no matching image element is present.
+	 */
+	function gutenberg_cover_bindings_rewrite_image( string $content, string $resolved_url, int $resolved_id, array $attrs ): string {
+		$alt             = trim( strip_tags( (string) get_post_meta( $resolved_id, '_wp_attachment_image_alt', true ) ) );
+		$size_slug       = isset( $attrs['sizeSlug'] ) && '' !== $attrs['sizeSlug']
+			? ' size-' . $attrs['sizeSlug']
+			: '';
+		$object_position = '';
+		if (
+			isset( $attrs['focalPoint']['x'] ) &&
+			isset( $attrs['focalPoint']['y'] ) &&
+			is_numeric( $attrs['focalPoint']['x'] ) &&
+			is_numeric( $attrs['focalPoint']['y'] )
+		) {
+			$object_position = sprintf(
+				'%s%% %s%%',
+				round( (float) $attrs['focalPoint']['x'] * 100 ),
+				round( (float) $attrs['focalPoint']['y'] * 100 )
+			);
+		}
+
+		// Form 2 first: parallax/repeat saved form — replace the empty <div>
+		// element wholesale with a rebuilt <img>. Saved markup is the source of
+		// truth (NOT $attrs['hasParallax'] / $attrs['isRepeated']) — the
+		// pattern matches the literal serialized form emitted by save.js.
+		$form2_pattern = '/<div\s+[^>]*\bwp-block-cover__image-background\b[^>]*><\/div>/U';
+		if ( 1 === preg_match( $form2_pattern, $content, $matches, PREG_OFFSET_CAPTURE ) ) {
+			$div_start  = $matches[0][1];
+			$div_length = strlen( $matches[0][0] );
+
+			$object_position_attrs = '';
+			if ( '' !== $object_position ) {
+				$object_position_attrs = sprintf(
+					' data-object-position="%s" style="object-position:%s;"',
+					esc_attr( $object_position ),
+					esc_attr( $object_position )
+				);
+			}
+
+			$rebuilt_img = sprintf(
+				'<img class="wp-block-cover__image-background wp-image-%d%s" alt="%s" src="%s" data-object-fit="cover"%s />',
+				$resolved_id,
+				esc_attr( $size_slug ),
+				esc_attr( $alt ),
+				esc_url( $resolved_url ),
+				$object_position_attrs
+			);
+
+			return substr( $content, 0, $div_start ) . $rebuilt_img . substr( $content, $div_start + $div_length );
+		}
+
+		// Form 1: plain <img> saved form — rewrite attributes in place.
+		$processor = new WP_HTML_Tag_Processor( $content );
+		if ( $processor->next_tag(
+			array(
+				'tag_name'   => 'IMG',
+				'class_name' => 'wp-block-cover__image-background',
+			)
+		) ) {
+			$processor->set_attribute( 'src', $resolved_url );
+			$processor->set_attribute( 'alt', $alt );
+
+			// Replace any existing wp-image-{old} with the resolved id. class_list()
+			// yields the current classes, including ones added in this same pass.
+			$class_list = $processor->class_list();
+			if ( null !== $class_list ) {
+				$wp_image_classes_to_remove = array();
+				foreach ( $class_list as $cls ) {
+					if ( 0 === strpos( $cls, 'wp-image-' ) ) {
+						$wp_image_classes_to_remove[] = $cls;
+					}
+				}
+				foreach ( $wp_image_classes_to_remove as $cls ) {
+					$processor->remove_class( $cls );
+				}
+			}
+			$processor->add_class( 'wp-image-' . $resolved_id );
+
+			return $processor->get_updated_html();
+		}
+
+		// Neither form matched; render proceeds overlay-only.
+		return $content;
+	}
+}
+
+if ( ! function_exists( 'gutenberg_cover_bindings_render_block' ) ) {
+	/**
+	 * Rewrites a rendered Cover block to honour an active `id`+`url` binding.
+	 *
+	 * Registered on the `render_block` filter at priority 9 so it runs BEFORE
+	 * the generic priority-10 `gutenberg_block_bindings_render_block`
+	 * (`lib/compat/wordpress-6.9/block-bindings.php`) — the binding-aware
+	 * substitution must happen on the saved markup before the generic filter
+	 * potentially re-runs `$instance->render()`.
+	 *
+	 * Gating order (each step short-circuits to "return unchanged"):
+	 *
+	 * 1. The block is not `core/cover`.
+	 * 2. `backgroundType === 'embed-video'` — embed-video covers are explicitly
+	 *    out of scope for the Cover-scoped binding render path (AC-21); the
+	 *    existing oEmbed code path remains intact.
+	 * 3. The bindings are not active per `gutenberg_cover_bindings_is_active()`.
+	 *
+	 * After the gates, the resolved URL and ID come from `$instance->attributes`
+	 * (which `WP_Block::render()` has already merged the resolved bindings
+	 * into — see `wp-includes/class-wp-block.php`). If either value is missing,
+	 * or the resolved ID is not an attachment in the media library, the saved
+	 * image element is stripped from `$content` and the cover renders
+	 * overlay-only (AC-5, AC-6).
+	 *
+	 * Otherwise the saved image element is rewritten in place by
+	 * `gutenberg_cover_bindings_rewrite_image()` to carry the bound URL, ID
+	 * class, and alt text (AC-3, AC-19). When the stored `dimRatio` is the
+	 * default 100, `gutenberg_cover_bindings_relax_dim_class()` removes
+	 * `has-background-dim-100` from the overlay span so the bound image is not
+	 * hidden by a fully-opaque overlay (AC-16, OQ-4). Non-default `dimRatio`
+	 * values are preserved (AC-17).
+	 *
+	 * @since 7.1.0
+	 *
+	 * @param string   $block_content The rendered block HTML, as passed in by
+	 *                                the `render_block` filter.
+	 * @param array    $block         The parsed block array (`blockName`, etc.).
+	 * @param WP_Block $instance      The block instance, whose `attributes`
+	 *                                already include any resolved binding values.
+	 * @return string The (possibly rewritten) block HTML.
+	 */
+	function gutenberg_cover_bindings_render_block( $block_content, $block, $instance ) {
+		if ( 'core/cover' !== ( $block['blockName'] ?? '' ) ) {
+			return $block_content;
+		}
+
+		$attrs = $instance->attributes ?? array();
+
+		// AC-21: never engage for embed-video covers.
+		if ( ! empty( $attrs['backgroundType'] ) && 'embed-video' === $attrs['backgroundType'] ) {
+			return $block_content;
+		}
+
+		if ( ! gutenberg_cover_bindings_is_active( $attrs ) ) {
+			return $block_content;
+		}
+
+		$resolved_url = $attrs['url'] ?? null;
+		$resolved_id  = (int) ( $attrs['id'] ?? 0 );
+
+		if ( empty( $resolved_url ) || empty( $resolved_id ) ) {
+			return gutenberg_cover_bindings_strip_image( $block_content );
+		}
+
+		$attachment = get_post( $resolved_id );
+		if ( ! $attachment || 'attachment' !== $attachment->post_type ) {
+			return gutenberg_cover_bindings_strip_image( $block_content );
+		}
+
+		$block_content = gutenberg_cover_bindings_rewrite_image(
+			$block_content,
+			(string) $resolved_url,
+			$resolved_id,
+			$attrs
+		);
+
+		// AC-16 / OQ-4: stored dimRatio defaults to 100; relax it to "no
+		// modifier class" (effectively 50%) so the bound image is visible.
+		if ( 100 === (int) ( $attrs['dimRatio'] ?? 100 ) ) {
+			$block_content = gutenberg_cover_bindings_relax_dim_class( $block_content );
+		}
+
+		return $block_content;
+	}
+}
+
+// Priority 9 is essential — see the docblock above: must run BEFORE the
+// generic priority-10 gutenberg_block_bindings_render_block filter from
+// lib/compat/wordpress-6.9/block-bindings.php so the Cover-scoped substitution
+// runs on saved markup, not on already-bindings-resolved markup.
+add_filter( 'render_block', 'gutenberg_cover_bindings_render_block', 9, 3 );
