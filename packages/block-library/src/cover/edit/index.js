@@ -9,6 +9,7 @@ import clsx from 'clsx';
 import { useEntityProp, store as coreStore } from '@wordpress/core-data';
 import {
 	useEffect,
+	useEffectEvent,
 	useLayoutEffect,
 	useMemo,
 	useRef,
@@ -47,6 +48,7 @@ import CoverInspectorControls from './inspector-controls';
 import CoverBlockControls from './block-controls';
 import CoverPlaceholder from './cover-placeholder';
 import ResizableCoverPopover from './resizable-cover-popover';
+import useCoverBindingState from './use-cover-binding-state';
 import {
 	getMediaColor,
 	compositeIsDark,
@@ -92,8 +94,9 @@ function CoverEdit( {
 	setAttributes,
 	setOverlayColor,
 	toggleSelection,
-	context: { postId, postType },
+	context,
 } ) {
+	const { postId, postType } = context;
 	const {
 		contentPosition,
 		id,
@@ -115,6 +118,19 @@ function CoverEdit( {
 		sizeSlug,
 		poster,
 	} = attributes;
+
+	// Single source of truth for binding state. Drives the derived values
+	// (`effectiveUrl`, `effectiveDimRatio`) below.
+	const { bindingActive, bindingResolvedUrl } = useCoverBindingState( {
+		clientId,
+		attributes,
+		context,
+	} );
+
+	// Race-token guard for the source-agnostic `effectiveUrl` observer below.
+	// Incremented on each invocation; stale `getMediaColor` resolutions bail
+	// when their captured token no longer matches `raceTokenRef.current`.
+	const raceTokenRef = useRef( 0 );
 
 	const [ featuredImage ] = useEntityProp(
 		'postType',
@@ -156,49 +172,95 @@ function CoverEdit( {
 		media?.media_details?.sizes?.[ sizeSlug ]?.source_url ??
 		media?.source_url;
 
-	// User can change the featured image outside of the block, but we still
-	// need to update the block when that happens. This effect should only
-	// run when the featured image changes in that case. All other cases are
-	// handled in their respective callbacks.
-	useEffect( () => {
-		( async () => {
-			if ( ! useFeaturedImage ) {
-				return;
-			}
+	// Source-agnostic URL to be displayed in the editor. Prefers the bound
+	// source's resolved URL; otherwise falls back to the trunk derivation
+	// (featured image when `useFeaturedImage`, otherwise the stored URL with
+	// HTML-entity decoding). DC-3: the downstream observer treats this value
+	// without branching on which branch produced it.
+	const effectiveUrl =
+		bindingResolvedUrl ??
+		( useFeaturedImage
+			? mediaUrl
+			: // Ensure the url is not malformed due to sanitization through `wp_kses`.
+			  originalUrl?.replaceAll( '&amp;', '&' ) );
 
-			const averageBackgroundColor = await getMediaColor( mediaUrl );
+	// Preview-time dim ratio. Default `dimRatio === 100` would produce an
+	// opaque overlay on bound covers (hiding the resolved image); §5.2 relaxes
+	// it to 50 only when the binding is active AND there is an image to show.
+	// In every other case this equals `dimRatio`, preserving trunk behaviour.
+	const effectiveDimRatio =
+		bindingActive && dimRatio === 100 && effectiveUrl ? 50 : dimRatio;
 
-			// Read latest values after await to avoid stale closures.
-			const { attributes: currentAttrs, overlayColor: currentOverlay } =
-				propsRef.current;
+	/**
+	 * Source-agnostic URL-resolved observer.
+	 *
+	 * Recomputes `overlayColor` (when the user has not pinned an overlay
+	 * colour) and `isDark` whenever the effective URL changes — regardless of
+	 * whether the change came from a manual selection, `useFeaturedImage`, or
+	 * a bound source resolving. `useEffectEvent` gives us a stable identity
+	 * for use inside the single `useEffect` below while reading the latest
+	 * `attributes` / `overlayColor` through `propsRef.current`. The
+	 * race-token bookkeeping ensures that when two URL changes race, only
+	 * the most recent `getMediaColor` resolution writes back.
+	 *
+	 * DC-2: the only attribute write here is `{ isDark }`, which is not in
+	 * the DC-2 prohibition list. The `setOverlayColor( avg )` carve-out
+	 * preserves trunk behaviour (the identical call site previously fired
+	 * inside the `mediaUrl` effect) and runs identically for manual,
+	 * featured-image, and binding-sourced URLs — i.e. source-agnostic.
+	 *
+	 * @param {string|undefined} resolvedUrl The URL whose dominant colour
+	 *                                       drives the overlay derivation.
+	 *                                       Skipped when falsy.
+	 */
+	const onUrlResolved = useEffectEvent( async ( resolvedUrl ) => {
+		if ( ! resolvedUrl ) {
+			return;
+		}
 
-			let newOverlayColor = currentOverlay.color;
-			if ( ! currentAttrs.isUserOverlayColor ) {
-				newOverlayColor = averageBackgroundColor;
-				__unstableMarkNextChangeAsNotPersistent();
-				setOverlayColor( newOverlayColor );
-			}
+		const myToken = ++raceTokenRef.current;
+		const averageBackgroundColor = await getMediaColor( resolvedUrl );
 
-			const newIsDark = compositeIsDark(
-				currentAttrs.dimRatio,
-				newOverlayColor,
-				averageBackgroundColor
-			);
+		if ( myToken !== raceTokenRef.current ) {
+			// A newer resolution superseded ours; bail out so we do not
+			// clobber the latest derivation.
+			return;
+		}
+
+		// Read latest values after await to avoid stale closures.
+		const { attributes: currentAttrs, overlayColor: currentOverlay } =
+			propsRef.current;
+
+		let newOverlayColor = currentOverlay.color;
+		if ( ! currentAttrs.isUserOverlayColor ) {
+			newOverlayColor = averageBackgroundColor;
 			__unstableMarkNextChangeAsNotPersistent();
-			setAttributes( {
-				isDark: newIsDark,
-				isUserOverlayColor: currentAttrs.isUserOverlayColor || false,
-			} );
-		} )();
-		// Update the block only when the featured image changes.
-		// The other dependencies are stable references (dispatch actions / setters).
-	}, [
-		mediaUrl,
-		__unstableMarkNextChangeAsNotPersistent,
-		setAttributes,
-		setOverlayColor,
-		useFeaturedImage,
-	] );
+			setOverlayColor( newOverlayColor );
+		}
+
+		// Mirror the `effectiveDimRatio` derivation using the latest
+		// attributes so the dark/light decision matches what the user sees.
+		const latestEffectiveDimRatio =
+			bindingActive && currentAttrs.dimRatio === 100 && resolvedUrl
+				? 50
+				: currentAttrs.dimRatio;
+
+		const newIsDark = compositeIsDark(
+			latestEffectiveDimRatio,
+			newOverlayColor,
+			averageBackgroundColor
+		);
+		__unstableMarkNextChangeAsNotPersistent();
+		setAttributes( { isDark: newIsDark } );
+	} );
+
+	// `onUrlResolved` is created by `useEffectEvent`, which guarantees a
+	// stable identity across renders — so it intentionally does not appear
+	// in this dependency array. Re-run only when the source-agnostic
+	// `effectiveUrl` changes (DC-1: single observer keyed on `effectiveUrl`).
+	useEffect( () => {
+		onUrlResolved( effectiveUrl );
+	}, [ effectiveUrl ] );
 
 	// instead of destructuring the attributes
 	// we define the url and background type
@@ -728,15 +790,18 @@ function CoverEdit( {
 						aria-hidden="true"
 						className={ clsx(
 							'wp-block-cover__background',
-							dimRatioToClass( dimRatio ),
+							dimRatioToClass( effectiveDimRatio ),
 							{
 								[ overlayColor.class ]: overlayColor.class,
-								'has-background-dim': dimRatio !== undefined,
+								'has-background-dim':
+									effectiveDimRatio !== undefined,
 								// For backwards compatibility. Former versions of the Cover Block applied
 								// `.wp-block-cover__gradient-background` in the presence of
 								// media, a gradient and a dim.
 								'wp-block-cover__gradient-background':
-									url && gradientValue && dimRatio !== 0,
+									url &&
+									gradientValue &&
+									effectiveDimRatio !== 0,
 								'has-background-gradient': gradientValue,
 								[ gradientClass ]: gradientClass,
 							}
