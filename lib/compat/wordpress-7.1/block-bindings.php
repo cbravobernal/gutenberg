@@ -143,6 +143,48 @@ if ( ! function_exists( 'gutenberg_cover_bindings_is_active' ) ) {
 	}
 }
 
+if ( ! function_exists( 'gutenberg_cover_bindings_has_cover_relevant_configuration' ) ) {
+	/**
+	 * Determines whether a Cover block's `metadata.bindings` carries any
+	 * cover-relevant binding configuration.
+	 *
+	 * "Cover-relevant" means at least one of `__default`, `id`, or `url` is
+	 * present in the `metadata.bindings` map — i.e. the user has attempted to
+	 * bind one of the Cover's two bindable attributes. The helper does NOT
+	 * check whether the configuration is internally consistent; it answers
+	 * "does this cover have any cover-binding intent?", so the
+	 * `render_block` filter can distinguish:
+	 *
+	 *   - genuinely unbound covers (no `metadata.bindings` at all, or
+	 *     `metadata.bindings` only mentions attributes other than `id`/`url`
+	 *     /`__default`) — must render byte-identically to trunk (AC-20).
+	 *
+	 *   - covers whose binding configuration is present but
+	 *     `gutenberg_cover_bindings_is_active()` returned `false` (mismatched
+	 *     `source`, differing `args`, only one of `id`/`url` bound) — must
+	 *     render in the "unresolvable" state, with the saved image stripped
+	 *     (AC-6).
+	 *
+	 * This mirrors the client-side `bindingUnresolvable` predicate (per
+	 * `useCoverBindingState`), which similarly treats "any cover-relevant
+	 * bindings AND not active" as unresolvable.
+	 *
+	 * @since 7.1.0
+	 * @access private
+	 *
+	 * @param array<string, mixed> $attrs The Cover block's attribute array.
+	 * @return bool True when `metadata.bindings` has at least one of the
+	 *              cover-relevant keys (`__default`, `id`, `url`).
+	 */
+	function gutenberg_cover_bindings_has_cover_relevant_configuration( array $attrs ): bool {
+		$bindings = $attrs['metadata']['bindings'] ?? null;
+		if ( empty( $bindings ) || ! is_array( $bindings ) ) {
+			return false;
+		}
+		return isset( $bindings['__default'] ) || isset( $bindings['id'] ) || isset( $bindings['url'] );
+	}
+}
+
 if ( ! function_exists( 'gutenberg_cover_bindings_prepare_block' ) ) {
 	/**
 	 * Neutralises `useFeaturedImage` on Cover blocks whose `id`+`url` bindings
@@ -442,20 +484,27 @@ if ( ! function_exists( 'gutenberg_cover_bindings_render_block' ) ) {
 	 * substitution must happen on the saved markup before the generic filter
 	 * potentially re-runs `$instance->render()`.
 	 *
-	 * Gating order (each step short-circuits to "return unchanged"):
+	 * Gating order:
 	 *
-	 * 1. The block is not `core/cover`.
+	 * 1. The block is not `core/cover` — return unchanged.
 	 * 2. `backgroundType === 'embed-video'` — embed-video covers are explicitly
 	 *    out of scope for the Cover-scoped binding render path (AC-21); the
-	 *    existing oEmbed code path remains intact.
-	 * 3. The bindings are not active per `gutenberg_cover_bindings_is_active()`.
+	 *    existing oEmbed code path remains intact — return unchanged.
+	 * 3. The cover has `metadata.bindings` configuration for `id` and/or `url`
+	 *    but the configuration is not active (mismatched `source`, differing
+	 *    `args`, or only one of the two attributes bound). This is the
+	 *    server-side mirror of the client's `bindingUnresolvable` predicate:
+	 *    the binding cannot be honoured, so the saved image element is stripped
+	 *    and the cover renders overlay-only (AC-6).
+	 * 4. The bindings are not active AND there is no cover-relevant
+	 *    configuration — return unchanged (unbound cover, AC-20 non-regression).
 	 *
 	 * After the gates, the resolved URL and ID come from `$instance->attributes`
 	 * (which `WP_Block::render()` has already merged the resolved bindings
 	 * into — see `wp-includes/class-wp-block.php`). If either value is missing,
 	 * or the resolved ID is not an attachment in the media library, the saved
 	 * image element is stripped from `$content` and the cover renders
-	 * overlay-only (AC-5, AC-6).
+	 * overlay-only (AC-5).
 	 *
 	 * Otherwise the saved image element is rewritten in place by
 	 * `gutenberg_cover_bindings_rewrite_image()` to carry the bound URL, ID
@@ -487,6 +536,15 @@ if ( ! function_exists( 'gutenberg_cover_bindings_render_block' ) ) {
 		}
 
 		if ( ! gutenberg_cover_bindings_is_active( $attrs ) ) {
+			// AC-6: explicit per-attribute bindings whose `source` or `args`
+			// don't match (or only one of `id`/`url` is bound) cannot be
+			// honoured — strip the saved cover image element so the cover
+			// renders overlay-only, matching the client's `bindingUnresolvable`
+			// affordance. Covers with no cover-relevant binding configuration
+			// (the AC-20 unbound population) are returned unchanged.
+			if ( gutenberg_cover_bindings_has_cover_relevant_configuration( $attrs ) ) {
+				return gutenberg_cover_bindings_strip_image( $block_content );
+			}
 			return $block_content;
 		}
 
