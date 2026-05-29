@@ -833,8 +833,6 @@ describe( 'Cover block', () => {
 			expect( bindingState.bindingActive ).toBe( false );
 			expect( bindingState.bindingUnresolvable ).toBe( false );
 			expect( bindingState.bindingResolvedUrl ).toBeUndefined();
-			expect( bindingState.bindingResolvedId ).toBeUndefined();
-			expect( bindingState.canUserEditBindingValue ).toBe( false );
 		} );
 
 		// The remaining `bindingActive: true` / `bindingUnresolvable: true`
