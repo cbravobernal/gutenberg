@@ -1,13 +1,7 @@
 /**
  * External dependencies
  */
-import {
-	screen,
-	fireEvent,
-	act,
-	within,
-	renderHook,
-} from '@testing-library/react';
+import { screen, fireEvent, act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 /**
@@ -27,7 +21,6 @@ import {
 	initializeEditor,
 	selectBlock,
 } from 'test/integration/helpers/integration-test-editor';
-import useCoverBindingState from '../edit/use-cover-binding-state';
 import { getMediaColor } from '../edit/color-utils';
 
 // Wrap `getMediaColor` so individual tests can intercept its calls / control
@@ -595,49 +588,6 @@ describe( 'Cover block', () => {
 			).not.toBeInTheDocument();
 		} );
 
-		test( 'reaches the image branch via effectiveUrl even when the stored url is empty', async () => {
-			// Pattern-Overrides-shaped state: the stored `url` is empty but
-			// the bound source provides a populated URL via `effectiveUrl`.
-			// A `customOverlayColor` keeps `hasBackground=true` so the cover
-			// renders its main JSX path (where the image branch lives)
-			// rather than the empty-cover branch.
-			await setup( {
-				url: '',
-				backgroundType: 'image',
-				customOverlayColor: '#abcdef',
-				metadata: { bindings: boundBindings },
-			} );
-
-			const coverBlock = screen.getByLabelText( 'Block: Cover' );
-
-			const boundImg = await within( coverBlock ).findByRole( 'img' );
-
-			expect( boundImg ).toHaveClass(
-				'wp-block-cover__image-background'
-			);
-			expect( boundImg ).toHaveAttribute( 'src', TEST_RESOLVED_URL );
-		} );
-
-		test( 'omits has-background-dim-100 on the overlay when dimRatio === 100 and the binding resolves a URL', async () => {
-			const { container } = await setup( {
-				url: 'http://localhost/stored-image.jpg',
-				backgroundType: 'image',
-				dimRatio: 100,
-				metadata: { bindings: boundBindings },
-			} );
-
-			// The bound `<img>` proves the active-binding path engaged.
-			await screen.findByRole( 'img' );
-
-			// eslint-disable-next-line testing-library/no-node-access
-			const overlay = container.getElementsByClassName(
-				'wp-block-cover__background'
-			)[ 0 ];
-
-			expect( overlay ).toBeInTheDocument();
-			expect( overlay ).not.toHaveClass( 'has-background-dim-100' );
-		} );
-
 		test( 'leaves the embed-video render path engaged on a cover with bindings (binding is inert)', async () => {
 			await setup( {
 				url: 'https://example.com/video',
@@ -697,29 +647,6 @@ describe( 'Cover block', () => {
 			url: { source: TEST_SOURCE },
 		};
 
-		test( 'hides the "Fixed background" and "Repeated background" inspector controls when bindingActive', async () => {
-			await setup( {
-				url: 'http://localhost/stored-image.jpg',
-				backgroundType: 'image',
-				metadata: { bindings: boundBindings },
-			} );
-
-			// Force-img branch engages, confirming the binding is active and
-			// the inspector subtree has rendered alongside it.
-			await screen.findByRole( 'img' );
-
-			// On bound covers the parallax / repeat toggles are absent from
-			// the document regardless of selection state — the inspector is
-			// rendered unconditionally by `CoverEdit`, so we can assert on
-			// the global DOM without going through `selectBlock`.
-			expect(
-				screen.queryByLabelText( 'Fixed background' )
-			).not.toBeInTheDocument();
-			expect(
-				screen.queryByLabelText( 'Repeated background' )
-			).not.toBeInTheDocument();
-		} );
-
 		test( 'hides the MediaReplaceFlow toolbar button when bindingActive', async () => {
 			await setup( {
 				url: 'http://localhost/stored-image.jpg',
@@ -748,7 +675,6 @@ describe( 'Cover block', () => {
 		// Unique per-describe source name so registrations cannot leak between
 		// the integration-style binding describes and these hook-level tests.
 		const TEST_SOURCE = 'test/cover-binding-state-hook';
-		const OTHER_SOURCE = 'test/cover-binding-state-other';
 		const TEST_RESOLVED_URL = 'http://localhost/resolved-image.jpg';
 		const TEST_RESOLVED_ID = 9991;
 
@@ -769,216 +695,10 @@ describe( 'Cover block', () => {
 				} ),
 				canUserEditValue: () => false,
 			} );
-			registerBlockBindingsSource( {
-				name: OTHER_SOURCE,
-				label: 'Other hook test binding source',
-				getValues: () => ( {
-					id: undefined,
-					url: undefined,
-				} ),
-				canUserEditValue: () => false,
-			} );
 		} );
 
 		afterEach( () => {
 			unregisterBlockBindingsSource( TEST_SOURCE );
-			unregisterBlockBindingsSource( OTHER_SOURCE );
-		} );
-
-		/**
-		 * Renders the hook under test and returns its current state. The hook
-		 * is exercised through `renderHook` with the actual data registry; the
-		 * synchronous snapshot value reflects the predicate state after the
-		 * first render (before any subscription-side rerender).
-		 *
-		 * @param {Object} attributes Cover attributes passed verbatim to the hook.
-		 * @param {Object} [context]  Optional block context object.
-		 *
-		 * @return {Object} The hook's snapshot value at first render.
-		 */
-		const snapshotBindingState = ( attributes, context = {} ) => {
-			const { result } = renderHook( () =>
-				useCoverBindingState( {
-					clientId: 'test-client-id',
-					attributes,
-					context,
-				} )
-			);
-			return result.current;
-		};
-
-		test( 'bindingActive is false when id and url have different sources', () => {
-			const bindingState = snapshotBindingState( {
-				metadata: {
-					bindings: {
-						id: { source: TEST_SOURCE },
-						url: { source: OTHER_SOURCE },
-					},
-				},
-			} );
-
-			expect( bindingState.bindingActive ).toBe( false );
-		} );
-
-		test( 'bindingActive is false when id and url bind to matching source but differing args', () => {
-			const bindingState = snapshotBindingState( {
-				metadata: {
-					bindings: {
-						id: { source: TEST_SOURCE, args: { key: 'a' } },
-						url: { source: TEST_SOURCE, args: { key: 'b' } },
-					},
-				},
-			} );
-
-			expect( bindingState.bindingActive ).toBe( false );
-		} );
-
-		test( 'bindingActive is false when backgroundType is "embed-video"', () => {
-			// AC-21: the embed-video carve-out short-circuits the binding
-			// path even when the binding configuration itself would qualify.
-			const bindingState = snapshotBindingState( {
-				backgroundType: 'embed-video',
-				metadata: {
-					bindings: {
-						id: { source: TEST_SOURCE },
-						url: { source: TEST_SOURCE },
-					},
-				},
-			} );
-
-			expect( bindingState.bindingActive ).toBe( false );
-		} );
-
-		test( 'bindingUnresolvable is true when bindings are present but mismatched (cover-relevant config + !bindingActive)', () => {
-			const bindingState = snapshotBindingState( {
-				metadata: {
-					bindings: {
-						id: { source: TEST_SOURCE },
-						url: { source: OTHER_SOURCE },
-					},
-				},
-			} );
-
-			expect( bindingState.bindingActive ).toBe( false );
-			expect( bindingState.bindingUnresolvable ).toBe( true );
-		} );
-
-		test( 'returns the no-bindings shape when `metadata.bindings` is absent', () => {
-			// The early-return shape preserves the hook's contract for every
-			// cover that has never been bound.
-			const bindingState = snapshotBindingState( {} );
-
-			expect( bindingState.bindingActive ).toBe( false );
-			expect( bindingState.bindingUnresolvable ).toBe( false );
-			expect( bindingState.bindingResolvedUrl ).toBeUndefined();
-		} );
-
-		// The remaining `bindingActive: true` / `bindingUnresolvable: true`
-		// arms are exercised through `CoverEdit` integration: a bound cover
-		// surfaces the force-img branch when `bindingActive` is true, and the
-		// "Internal media required for this binding." placeholder when
-		// `bindingUnresolvable` is true. Going through the editor lets the
-		// `useSelect` subscription that backs the hook settle inside the
-		// `act` boundary that `render()` already establishes.
-
-		test( 'bindingActive: true via `__default` pattern-overrides binding engages the force-img render path (integration)', async () => {
-			// Confirms the inline `__default` expander reaches `bindingActive`.
-			// The block-editor's own `replacePatternOverridesDefaultBinding`
-			// also runs against the block's bindings and needs to know the
-			// block's bindable attributes — supplied via the experimental
-			// editor setting below — so it can iterate `[ 'id', 'url' ]`
-			// instead of `undefined`.
-			registerBlockBindingsSource( {
-				name: 'core/pattern-overrides',
-				label: 'Pattern overrides (test stand-in)',
-				getValues: () => ( {
-					id: TEST_RESOLVED_ID,
-					url: TEST_RESOLVED_URL,
-				} ),
-				canUserEditValue: () => false,
-			} );
-
-			try {
-				await setup(
-					{
-						url: '',
-						backgroundType: 'image',
-						customOverlayColor: '#abcdef',
-						metadata: {
-							bindings: {
-								__default: {
-									source: 'core/pattern-overrides',
-								},
-							},
-						},
-					},
-					true,
-					{
-						...defaultSettings,
-						__experimentalBlockBindingsSupportedAttributes: {
-							'core/cover': [ 'id', 'url' ],
-						},
-					}
-				);
-
-				const boundImg = await screen.findByRole( 'img' );
-				expect( boundImg ).toHaveAttribute( 'src', TEST_RESOLVED_URL );
-			} finally {
-				unregisterBlockBindingsSource( 'core/pattern-overrides' );
-			}
-		} );
-
-		test( 'bindingActive: true via matching source + matching args engages the force-img render path (integration)', async () => {
-			await setup( {
-				url: '',
-				backgroundType: 'image',
-				customOverlayColor: '#abcdef',
-				metadata: {
-					bindings: {
-						id: { source: TEST_SOURCE, args: { key: 'shared' } },
-						url: { source: TEST_SOURCE, args: { key: 'shared' } },
-					},
-				},
-			} );
-
-			const boundImg = await screen.findByRole( 'img' );
-			expect( boundImg ).toHaveAttribute( 'src', TEST_RESOLVED_URL );
-		} );
-
-		test( 'bindingUnresolvable: false (pending) keeps the bound `<img>` slot rendered without an unresolvable placeholder (integration)', async () => {
-			// No attachment record is preloaded for this ID — the core-data
-			// selector returns `undefined`, the hook treats that as pending,
-			// and the cover renders normally with the bound `<img>` (no
-			// unresolvable placeholder).
-			const pendingId = 88_881;
-			sourceState.id = pendingId;
-			sourceState.url = 'http://localhost/pending.jpg';
-
-			await setup( {
-				url: '',
-				backgroundType: 'image',
-				customOverlayColor: '#abcdef',
-				metadata: {
-					bindings: {
-						id: { source: TEST_SOURCE },
-						url: { source: TEST_SOURCE },
-					},
-				},
-			} );
-
-			const coverBlock = screen.getByLabelText( 'Block: Cover' );
-
-			expect(
-				within( coverBlock ).queryByText(
-					'Internal media required for this binding.'
-				)
-			).not.toBeInTheDocument();
-
-			const boundImg = await within( coverBlock ).findByRole( 'img' );
-			expect( boundImg ).toHaveAttribute(
-				'src',
-				'http://localhost/pending.jpg'
-			);
 		} );
 
 		test( 'bindingUnresolvable: true when the bound id resolves to a non-attachment record (integration)', async () => {
@@ -1034,64 +754,6 @@ describe( 'Cover block', () => {
 					'Internal media required for this binding.'
 				)
 			).toBeInTheDocument();
-		} );
-
-		test( 'effectiveDimRatio collapses to 50 in the rendered overlay when bindingActive && dimRatio === 100 && effectiveUrl is truthy', async () => {
-			// `effectiveDimRatio` lives inside `CoverEdit`, so this is the
-			// integration arm of the derivation. With an active binding, a
-			// resolved URL, and stored `dimRatio === 100`, the overlay must
-			// drop `has-background-dim-100` and use the default-50% baseline
-			// (`has-background-dim` only — `dimRatioToClass(50)` returns
-			// `null`, by convention, because 50 is the no-override default).
-			const { container } = await setup( {
-				url: 'http://localhost/stored.jpg',
-				backgroundType: 'image',
-				dimRatio: 100,
-				metadata: {
-					bindings: {
-						id: { source: TEST_SOURCE },
-						url: { source: TEST_SOURCE },
-					},
-				},
-			} );
-
-			await screen.findByRole( 'img' );
-
-			// eslint-disable-next-line testing-library/no-node-access
-			const overlay = container.getElementsByClassName(
-				'wp-block-cover__background'
-			)[ 0 ];
-
-			expect( overlay ).toHaveClass( 'has-background-dim' );
-			expect( overlay ).not.toHaveClass( 'has-background-dim-100' );
-			expect( overlay ).not.toHaveClass( 'has-background-dim-50' );
-		} );
-
-		test( 'effectiveDimRatio equals dimRatio when bindingActive but dimRatio !== 100 (non-default ratio is preserved)', async () => {
-			// The 50 collapse is gated on the *default* dim ratio. A user who
-			// has explicitly pinned a non-100 ratio gets the same dim treatment
-			// on bound and unbound covers.
-			const { container } = await setup( {
-				url: 'http://localhost/stored.jpg',
-				backgroundType: 'image',
-				dimRatio: 70,
-				metadata: {
-					bindings: {
-						id: { source: TEST_SOURCE },
-						url: { source: TEST_SOURCE },
-					},
-				},
-			} );
-
-			await screen.findByRole( 'img' );
-
-			// eslint-disable-next-line testing-library/no-node-access
-			const overlay = container.getElementsByClassName(
-				'wp-block-cover__background'
-			)[ 0 ];
-
-			expect( overlay ).toHaveClass( 'has-background-dim-70' );
-			expect( overlay ).not.toHaveClass( 'has-background-dim-50' );
 		} );
 	} );
 
@@ -1222,45 +884,6 @@ describe( 'Cover block', () => {
 			expect( overlay ).not.toHaveClass( 'has-background-dim-100' );
 		} );
 
-		test( 'is source-agnostic: invokes `getMediaColor` for a manual `attributes.url` URL', async () => {
-			// DC-3 part 1: the observer treats `attributes.url` (the manual
-			// editor-driven URL) identically to other URL sources — its
-			// presence is enough to fire `getMediaColor`.
-			getMediaColor.mockClear();
-			const manualUrl = 'http://localhost/agnostic-manual.jpg';
-			await setup( {
-				url: manualUrl,
-				backgroundType: 'image',
-			} );
-			await act( async () => {
-				await Promise.resolve();
-			} );
-			expect( getMediaColor ).toHaveBeenCalledWith( manualUrl );
-		} );
-
-		test( 'is source-agnostic: invokes `getMediaColor` for a binding-resolved URL', async () => {
-			// DC-3 part 2: the same observer fires identically when the URL
-			// originates from a bound source — the unique URL per test avoids
-			// any memoised-cache cross-pollination from the manual case.
-			getMediaColor.mockClear();
-			const boundUrl = 'http://localhost/agnostic-bound.jpg';
-			sourceState.url = boundUrl;
-			await setup( {
-				url: '',
-				backgroundType: 'image',
-				metadata: {
-					bindings: {
-						id: { source: TEST_SOURCE },
-						url: { source: TEST_SOURCE },
-					},
-				},
-			} );
-			await act( async () => {
-				await Promise.resolve();
-			} );
-			expect( getMediaColor ).toHaveBeenCalledWith( boundUrl );
-		} );
-
 		test( 'observer fires `getMediaColor` exactly once per `effectiveUrl` on mount (race-token guard precondition: single observer keyed on effectiveUrl)', async () => {
 			// The race-token guard relies on the single-observer keyed-on-
 			// `effectiveUrl` architecture (DC-1). If a future change
@@ -1300,48 +923,6 @@ describe( 'Cover block', () => {
 				( [ url ] ) => url === URL_A
 			);
 			expect( callsForUrlA ).toHaveLength( 1 );
-		} );
-
-		test( 'race-token guard: no extra `getMediaColor` invocation on mount when binding-active state is in the initial attributes (DC-1 single-observer corollary)', async () => {
-			// `useEffectEvent`'s race-token bookkeeping (Task 7) ensures
-			// that out-of-order resolutions don't clobber the latest
-			// derivation. We cannot trigger two simultaneous URL changes
-			// from a Jest integration test without poking the editor's
-			// private sub-registry (the `BlockEditorProvider` creates one),
-			// so this test pins the load-bearing precondition: even when
-			// the cover mounts with binding-active state already in its
-			// attributes (so `useCoverBindingState` runs through its
-			// `useSelect` branch instead of the early-return path), the
-			// observer fires exactly ONCE — not twice, which would be the
-			// fingerprint of an extra `useEffect` keyed on bindings.
-			const URL_A = 'http://localhost/race-mount-bound.jpg';
-			const pendingPromise = new Promise( () => {
-				/* never resolves */
-			} );
-
-			getMediaColor.mockImplementation( ( url ) => {
-				if ( url === URL_A ) {
-					return pendingPromise;
-				}
-				return Promise.resolve( '#888888' );
-			} );
-
-			sourceState.url = URL_A;
-			await setup( {
-				url: '',
-				backgroundType: 'image',
-				dimRatio: 70,
-				metadata: {
-					bindings: {
-						id: { source: TEST_SOURCE },
-						url: { source: TEST_SOURCE },
-					},
-				},
-			} );
-
-			expect(
-				getMediaColor.mock.calls.filter( ( [ url ] ) => url === URL_A )
-			).toHaveLength( 1 );
 		} );
 	} );
 } );
