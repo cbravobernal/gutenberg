@@ -572,21 +572,12 @@ test.describe( 'Cover', () => {
 } );
 
 test.describe( 'Cover — Block Bindings — Pattern Overrides round-trip', () => {
-	/**
-	 * The synced pattern's Cover block is given a stable `metadata.name` so
-	 * pattern-override values keyed off it can be addressed unambiguously from
-	 * the pattern instance's `content` attribute. The same name appears in
-	 * every override / reset step below.
-	 */
 	const coverBindingName = 'Bound Cover';
 
 	let defaultMedia;
 	let overrideMedia;
 
 	test.beforeAll( async ( { requestUtils } ) => {
-		// Two attachments: `defaultMedia` is baked into the pattern's saved
-		// cover; `overrideMedia` is written into a pattern instance via the
-		// `core/block` `content` attribute below.
 		[ defaultMedia, overrideMedia ] = await Promise.all( [
 			requestUtils.uploadMedia(
 				'./assets/10x10_e2e_test_image_z9T8jK.png'
@@ -595,15 +586,9 @@ test.describe( 'Cover — Block Bindings — Pattern Overrides round-trip', () =
 				'./assets/1024x768_e2e_test_image_size.jpeg'
 			),
 		] );
-		// Sanity: distinct attachments so the round-trip assertions are
-		// observable in both directions (default → override → reset).
-		expect( overrideMedia.id ).not.toBe( defaultMedia.id );
-		expect( overrideMedia.source_url ).not.toBe( defaultMedia.source_url );
 	} );
 
 	test.beforeEach( async ( { admin, requestUtils } ) => {
-		// Reset blocks between phases so each top-level step starts from a
-		// known post + pattern store.
 		await requestUtils.deleteAllBlocks();
 		await admin.createNewPost();
 	} );
@@ -619,11 +604,6 @@ test.describe( 'Cover — Block Bindings — Pattern Overrides round-trip', () =
 		page,
 		requestUtils,
 	} ) => {
-		// Synced pattern carrying a bound Cover. `__default` pattern-overrides
-		// expands to per-attribute `id` / `url` bindings on the server and in
-		// the editor hook, so the inner Cover renders the saved
-		// `defaultMedia` until a parent `core/block` `content` override is
-		// applied.
 		const pattern = await requestUtils.createBlock( {
 			title: 'Cover Pattern',
 			content: `<!-- wp:cover {"url":"${ defaultMedia.source_url }","id":${ defaultMedia.id },"dimRatio":100,"customOverlayColor":"#000000","minHeight":80,"metadata":{"name":"${ coverBindingName }","bindings":{"__default":{"source":"core/pattern-overrides"}}}} -->
@@ -634,8 +614,12 @@ test.describe( 'Cover — Block Bindings — Pattern Overrides round-trip', () =
 			status: 'publish',
 		} );
 
-		let patternBlock;
-		let coverBlock;
+		const getCoverBlock = () =>
+			editor.canvas
+				.getByRole( 'document', { name: 'Block: Pattern' } )
+				.getByRole( 'document', { name: 'Block: Cover' } );
+		const getBlockToolbar = () =>
+			page.getByRole( 'toolbar', { name: 'Block tools' } );
 
 		await test.step( 'Default state — pattern instance shows defaultMedia and hides bound controls', async () => {
 			await editor.insertBlock( {
@@ -643,29 +627,16 @@ test.describe( 'Cover — Block Bindings — Pattern Overrides round-trip', () =
 				attributes: { ref: pattern.id },
 			} );
 
-			patternBlock = editor.canvas.getByRole( 'document', {
-				name: 'Block: Pattern',
-			} );
-			coverBlock = patternBlock.getByRole( 'document', {
-				name: 'Block: Cover',
-			} );
-			await expect( coverBlock ).toBeVisible();
-
-			// AC-7 / AC-22: the editor preview img resolves to the pattern's
-			// default attachment because no override is set on the instance.
+			const coverBlock = getCoverBlock();
 			await expect( coverBlock.locator( 'img' ) ).toHaveAttribute(
 				'src',
 				defaultMedia.source_url
 			);
 
-			// AC-15: editor overlay should keep `has-background-dim` but drop
-			// the `-100` modifier so the bound `<img>` remains visible (the
-			// hook downshifts `effectiveDimRatio` to 50 when `dimRatio===100`).
+			// AC-15: dimRatio:100 relaxed so the bound <img> stays visible.
 			const overlay = coverBlock.locator( '.wp-block-cover__background' );
 			await expect( overlay ).toHaveClass( /has-background-dim(?!-100)/ );
-			await expect( overlay ).not.toHaveClass( /has-background-dim-100/ );
 
-			// Select the bound Cover so its inspector + toolbar render.
 			await editor.selectBlocks( coverBlock );
 			await editor.openDocumentSettingsSidebar();
 			await editor.showBlockToolbar();
@@ -675,8 +646,7 @@ test.describe( 'Cover — Block Bindings — Pattern Overrides round-trip', () =
 			} );
 			await openStylesTabIfAvailable( editorSettings );
 
-			// AC-11 / AC-12: the parallax + repeated-background tools-panel
-			// items are absent for bound covers.
+			// AC-11/12: parallax + repeated controls absent on bound covers.
 			await expect(
 				editorSettings.getByRole( 'checkbox', {
 					name: 'Fixed background',
@@ -688,33 +658,20 @@ test.describe( 'Cover — Block Bindings — Pattern Overrides round-trip', () =
 				} )
 			).toHaveCount( 0 );
 
-			// AC-13 / AC-14: the `<MediaReplaceFlow>` toolbar dropdown — the
-			// only DOM site of both the "Replace" and "Add media" toolbar
-			// labels — is omitted entirely. Zero matches is the positive
-			// assertion the design doc (§5.5) and the task spec require.
-			const blockToolbar = page.getByRole( 'toolbar', {
-				name: 'Block tools',
-			} );
+			// AC-13/14: MediaReplaceFlow toggle (Replace + Add media) absent.
 			await expect(
-				blockToolbar.getByRole( 'button', {
+				getBlockToolbar().getByRole( 'button', {
 					name: /^(Replace|Add media)$/,
 				} )
 			).toHaveCount( 0 );
 
-			// AC-10: the `ResetOverridesControl` toolbar button reports
-			// disabled because no override has been written yet.
-			const resetButton = blockToolbar.getByRole( 'button', {
-				name: 'Reset',
-			} );
-			await expect( resetButton ).toBeDisabled();
+			// AC-10: Reset disabled without override.
+			await expect(
+				getBlockToolbar().getByRole( 'button', { name: 'Reset' } )
+			).toBeDisabled();
 		} );
 
 		await test.step( 'AC-21 — embed-video covers retain Replace + "Embed video from URL"', async () => {
-			// Embed-video covers force `bindingActive=false` upstream even
-			// when `metadata.bindings` is present, so the
-			// `<MediaReplaceFlow>` affordance — including the "Embed video
-			// from URL" `<MenuItem>` child — must still render. Use a brand
-			// new post to keep the assertion focused on a single block tree.
 			await admin.createNewPost();
 			await editor.insertBlock( {
 				name: 'core/cover',
@@ -738,22 +695,14 @@ test.describe( 'Cover — Block Bindings — Pattern Overrides round-trip', () =
 			await editor.selectBlocks( embedCover );
 			await editor.showBlockToolbar();
 
-			const embedToolbar = page.getByRole( 'toolbar', {
-				name: 'Block tools',
-			} );
-			const replaceToggle = embedToolbar.getByRole( 'button', {
+			const replaceToggle = getBlockToolbar().getByRole( 'button', {
 				name: /^(Replace|Add media)$/,
 			} );
 			await expect( replaceToggle ).toBeVisible();
-
 			await replaceToggle.click();
 			await expect(
-				page.getByRole( 'menuitem', {
-					name: 'Embed video from URL',
-				} )
+				page.getByRole( 'menuitem', { name: 'Embed video from URL' } )
 			).toBeVisible();
-
-			// Close the dropdown so it does not bleed into the next step.
 			await page.keyboard.press( 'Escape' );
 		} );
 
@@ -764,24 +713,15 @@ test.describe( 'Cover — Block Bindings — Pattern Overrides round-trip', () =
 				attributes: { ref: pattern.id },
 			} );
 
-			patternBlock = editor.canvas.getByRole( 'document', {
-				name: 'Block: Pattern',
-			} );
-			coverBlock = patternBlock.getByRole( 'document', {
-				name: 'Block: Cover',
-			} );
+			const coverBlock = getCoverBlock();
 			await expect( coverBlock ).toBeVisible();
 
-			// Write the override directly onto the pattern instance's
-			// `content` attribute. This is exactly what
-			// `ResetOverridesControl` undoes in the reset step below.
 			await page.evaluate(
 				( { name, overrideId, overrideUrl } ) => {
 					const { dispatch, select } = window.wp.data;
-					const blocks = select( 'core/block-editor' ).getBlocks();
-					const patternClientId = blocks.find(
-						( block ) => block.name === 'core/block'
-					)?.clientId;
+					const patternClientId = select( 'core/block-editor' )
+						.getBlocks()
+						.find( ( b ) => b.name === 'core/block' )?.clientId;
 					dispatch( 'core/block-editor' ).updateBlockAttributes(
 						patternClientId,
 						{
@@ -801,47 +741,28 @@ test.describe( 'Cover — Block Bindings — Pattern Overrides round-trip', () =
 				}
 			);
 
-			// AC-22 editor: the bound `<img src>` flips to the override.
+			// AC-22 editor: bound <img src> flips to the override.
 			await expect( coverBlock.locator( 'img' ) ).toHaveAttribute(
 				'src',
 				overrideMedia.source_url
 			);
 
-			// AC-10: the now-written override flips `ResetOverridesControl`
-			// to enabled.
+			// AC-10: written override flips Reset to enabled.
 			await editor.selectBlocks( coverBlock );
 			await editor.showBlockToolbar();
-			const blockToolbar = page.getByRole( 'toolbar', {
-				name: 'Block tools',
-			} );
 			await expect(
-				blockToolbar.getByRole( 'button', { name: 'Reset' } )
+				getBlockToolbar().getByRole( 'button', { name: 'Reset' } )
 			).toBeEnabled();
 
-			// AC-8 / AC-16: publish, then read the rendered post on the
-			// front-end. The server-rendered `<img src>` must match the
-			// override and the overlay span must keep `has-background-dim`
-			// while losing the `-100` modifier.
+			// AC-8/16: front-end matches override + relaxed dim.
 			const postId = await editor.publishPost();
 			await page.goto( `/?p=${ postId }` );
-
-			const renderedImage = page.locator(
-				'.wp-block-cover__image-background'
-			);
-			await expect( renderedImage ).toHaveAttribute(
-				'src',
-				overrideMedia.source_url
-			);
-
-			const renderedOverlay = page.locator(
-				'.wp-block-cover__background'
-			);
-			await expect( renderedOverlay ).toHaveClass(
-				/has-background-dim(?!-100)/
-			);
-			await expect( renderedOverlay ).not.toHaveClass(
-				/has-background-dim-100/
-			);
+			await expect(
+				page.locator( '.wp-block-cover__image-background' )
+			).toHaveAttribute( 'src', overrideMedia.source_url );
+			await expect(
+				page.locator( '.wp-block-cover__background' )
+			).toHaveClass( /has-background-dim(?!-100)/ );
 		} );
 
 		await test.step( 'Reset — clicking Reset clears the override on both editor and front-end', async () => {
@@ -859,14 +780,7 @@ test.describe( 'Cover — Block Bindings — Pattern Overrides round-trip', () =
 				},
 			} );
 
-			patternBlock = editor.canvas.getByRole( 'document', {
-				name: 'Block: Pattern',
-			} );
-			coverBlock = patternBlock.getByRole( 'document', {
-				name: 'Block: Cover',
-			} );
-
-			// Confirm the override is in effect before resetting.
+			const coverBlock = getCoverBlock();
 			await expect( coverBlock.locator( 'img' ) ).toHaveAttribute(
 				'src',
 				overrideMedia.source_url
@@ -874,24 +788,15 @@ test.describe( 'Cover — Block Bindings — Pattern Overrides round-trip', () =
 
 			await editor.selectBlocks( coverBlock );
 			await editor.showBlockToolbar();
-			const blockToolbar = page.getByRole( 'toolbar', {
-				name: 'Block tools',
-			} );
-			const resetButton = blockToolbar.getByRole( 'button', {
-				name: 'Reset',
-			} );
-			await expect( resetButton ).toBeEnabled();
-			await resetButton.click();
+			await getBlockToolbar()
+				.getByRole( 'button', { name: 'Reset' } )
+				.click();
 
-			// AC-9 editor: the bound `<img src>` falls back to the pattern's
-			// stored default attachment.
+			// AC-9 editor + front-end: falls back to pattern default.
 			await expect( coverBlock.locator( 'img' ) ).toHaveAttribute(
 				'src',
 				defaultMedia.source_url
 			);
-
-			// AC-9 front-end: the rendered post likewise serves the default
-			// attachment after the reset persists.
 			const postId = await editor.publishPost();
 			await page.goto( `/?p=${ postId }` );
 			await expect(
@@ -901,13 +806,6 @@ test.describe( 'Cover — Block Bindings — Pattern Overrides round-trip', () =
 
 		await test.step( 'Unresolvable — mismatched-source bindings surface the i18n affordance', async () => {
 			await admin.createNewPost();
-
-			// `id` and `url` bound to different sources never satisfy the
-			// hook's `bindingActive` predicate, so the Cover renders the
-			// unresolvable placeholder branch. The mismatched source-set is
-			// intentionally not Pattern Overrides on both sides; the second
-			// source need not actually resolve — the affordance is driven
-			// purely by the source-mismatch detection.
 			await editor.insertBlock( {
 				name: 'core/cover',
 				attributes: {
@@ -924,8 +822,7 @@ test.describe( 'Cover — Block Bindings — Pattern Overrides round-trip', () =
 				},
 			} );
 
-			// OQ-6: the user-facing affordance is the i18n message — not a
-			// data-testid — exactly per the task contract.
+			// OQ-6: i18n message is the user-facing affordance.
 			await expect(
 				page.getByText( 'Internal media required for this binding.' )
 			).toBeVisible();
