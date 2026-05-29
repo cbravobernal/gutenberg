@@ -33,6 +33,42 @@ if ( ! function_exists( 'gutenberg_cover_bindings_add_supported_attributes' ) ) 
 
 add_filter( 'block_bindings_supported_attributes', 'gutenberg_cover_bindings_add_supported_attributes', 10, 2 );
 
+if ( ! function_exists( 'gutenberg_cover_bindings_args_equal' ) ) {
+	/**
+	 * Order-insensitive strict equality for binding `args` values.
+	 *
+	 * Recurses into associative arrays. Two arrays are equal when they have
+	 * the same keys and each value strict-equals its counterpart. Scalars
+	 * and `null` are strict-compared.
+	 *
+	 * @since 7.1.0
+	 *
+	 * @param mixed $a First value.
+	 * @param mixed $b Second value.
+	 * @return bool
+	 */
+	function gutenberg_cover_bindings_args_equal( $a, $b ): bool {
+		if ( $a === $b ) {
+			return true;
+		}
+		if ( ! is_array( $a ) || ! is_array( $b ) ) {
+			return false;
+		}
+		if ( count( $a ) !== count( $b ) ) {
+			return false;
+		}
+		foreach ( $a as $key => $value ) {
+			if ( ! array_key_exists( $key, $b ) ) {
+				return false;
+			}
+			if ( ! gutenberg_cover_bindings_args_equal( $value, $b[ $key ] ) ) {
+				return false;
+			}
+		}
+		return true;
+	}
+}
+
 if ( ! function_exists( 'gutenberg_cover_bindings_is_active' ) ) {
 	/**
 	 * Whether a parsed Cover has both `id` and `url` bound to the same source instance.
@@ -61,9 +97,7 @@ if ( ! function_exists( 'gutenberg_cover_bindings_is_active' ) ) {
 		}
 
 		$same_source = ( $id_binding['source'] ?? null ) === ( $url_binding['source'] ?? null );
-		// Loose `==` on `args` per Pattern Overrides convention: order-insensitive
-		// associative-bag comparison.
-		$same_args = ( $id_binding['args'] ?? null ) == ( $url_binding['args'] ?? null ); // phpcs:ignore WordPress.PHP.StrictComparisons.LooseComparison
+		$same_args   = gutenberg_cover_bindings_args_equal( $id_binding['args'] ?? null, $url_binding['args'] ?? null );
 
 		return $same_source && $same_args;
 	}
