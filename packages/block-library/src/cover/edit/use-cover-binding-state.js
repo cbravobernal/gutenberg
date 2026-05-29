@@ -45,11 +45,9 @@ function expandDefaultBinding( bindings, supportedAttributes ) {
  * The shape of state returned by {@link useCoverBindingState}.
  *
  * @typedef {Object} CoverBindingState
- * @property {boolean}          bindingActive           True iff (after `__default` expansion) both `id` AND `url` are bound to the same source instance (same source, same `args`) AND `attributes.backgroundType !== 'embed-video'`.
- * @property {boolean}          bindingUnresolvable     True iff `metadata.bindings` carries any cover-relevant configuration but the binding is not active, OR the bound attachment resolved to a record that is not a media-library attachment.
- * @property {string|undefined} bindingResolvedUrl      URL resolved from the bound source (or `undefined` when no binding is active or the source is missing).
- * @property {number|undefined} bindingResolvedId       Attachment ID resolved from the bound source (or `undefined`).
- * @property {boolean}          canUserEditBindingValue Result of the bound source's `canUserEditValue` callback (used downstream to decide whether to lock URL controls); `false` when the source omits the callback or when no binding is active.
+ * @property {boolean}          bindingActive       True iff (after `__default` expansion) both `id` AND `url` are bound to the same source instance (same source, same `args`) AND `attributes.backgroundType !== 'embed-video'`.
+ * @property {boolean}          bindingUnresolvable True iff `metadata.bindings` carries any cover-relevant configuration but the binding is not active, OR the bound attachment resolved to a record that is not a media-library attachment.
+ * @property {string|undefined} bindingResolvedUrl  URL resolved from the bound source (or `undefined` when no binding is active or the source is missing).
  */
 
 /**
@@ -95,28 +93,19 @@ export default function useCoverBindingState( {
 		sameArgs &&
 		attributes.backgroundType !== 'embed-video';
 
-	const {
-		bindingResolvedUrl,
-		bindingResolvedId,
-		bindingResolvedAttachment,
-		canUserEditBindingValue,
-	} = useSelect(
+	const { bindingResolvedUrl, bindingResolvedAttachment } = useSelect(
 		( select ) => {
 			if ( ! bindingActive ) {
 				return {
 					bindingResolvedUrl: undefined,
-					bindingResolvedId: undefined,
 					bindingResolvedAttachment: undefined,
-					canUserEditBindingValue: false,
 				};
 			}
 			const source = getBlockBindingsSource( expanded.url.source );
 			if ( ! source ) {
 				return {
 					bindingResolvedUrl: undefined,
-					bindingResolvedId: undefined,
 					bindingResolvedAttachment: undefined,
-					canUserEditBindingValue: false,
 				};
 			}
 			const values = source.getValues( {
@@ -135,18 +124,9 @@ export default function useCoverBindingState( {
 						{ context: 'view' }
 				  )
 				: undefined;
-			const userCanEdit =
-				source.canUserEditValue?.( {
-					select,
-					clientId,
-					context,
-					args: expanded.url.args,
-				} ) ?? false;
 			return {
 				bindingResolvedUrl: resolvedUrl,
-				bindingResolvedId: resolvedId,
 				bindingResolvedAttachment: attachment,
-				canUserEditBindingValue: userCanEdit,
 			};
 		},
 		// The dependency array is intentionally narrow: source identity (which
@@ -170,8 +150,6 @@ export default function useCoverBindingState( {
 			bindingActive: false,
 			bindingUnresolvable: false,
 			bindingResolvedUrl: undefined,
-			bindingResolvedId: undefined,
-			canUserEditBindingValue: false,
 		};
 	}
 
@@ -195,7 +173,5 @@ export default function useCoverBindingState( {
 		bindingActive,
 		bindingUnresolvable,
 		bindingResolvedUrl,
-		bindingResolvedId,
-		canUserEditBindingValue,
 	};
 }
