@@ -111,7 +111,7 @@ if ( ! function_exists( 'gutenberg_cover_bindings_prepare_block' ) ) {
 	 *
 	 * @since 7.1.0
 	 */
-	function gutenberg_cover_bindings_prepare_block( $parsed_block, $source_block, $parent_block ) {
+	function gutenberg_cover_bindings_prepare_block( $parsed_block ) {
 		if ( 'core/cover' !== ( $parsed_block['blockName'] ?? '' ) ) {
 			return $parsed_block;
 		}
@@ -134,7 +134,7 @@ if ( ! function_exists( 'gutenberg_cover_bindings_prepare_block' ) ) {
 	}
 }
 
-add_filter( 'render_block_data', 'gutenberg_cover_bindings_prepare_block', 10, 3 );
+add_filter( 'render_block_data', 'gutenberg_cover_bindings_prepare_block', 10, 1 );
 
 if ( ! function_exists( 'gutenberg_cover_bindings_strip_image' ) ) {
 	/**
