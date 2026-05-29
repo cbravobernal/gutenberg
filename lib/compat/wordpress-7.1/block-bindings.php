@@ -49,50 +49,11 @@ if ( ! function_exists( 'gutenberg_cover_bindings_add_supported_attributes' ) ) 
 
 add_filter( 'block_bindings_supported_attributes', 'gutenberg_cover_bindings_add_supported_attributes', 10, 2 );
 
-if ( ! function_exists( 'gutenberg_cover_bindings_args_equal' ) ) {
-	/**
-	 * Order-insensitive strict equality for binding `args` values.
-	 *
-	 * Recurses into associative arrays. Two arrays are equal when they have
-	 * the same keys and each value strict-equals its counterpart. Scalars
-	 * and `null` are strict-compared.
-	 *
-	 * @since 7.1.0
-	 *
-	 * @param mixed $a First value.
-	 * @param mixed $b Second value.
-	 * @return bool
-	 */
-	function gutenberg_cover_bindings_args_equal( $a, $b ): bool {
-		if ( $a === $b ) {
-			return true;
-		}
-		if ( ! is_array( $a ) || ! is_array( $b ) ) {
-			return false;
-		}
-		if ( count( $a ) !== count( $b ) ) {
-			return false;
-		}
-		foreach ( $a as $key => $value ) {
-			if ( ! array_key_exists( $key, $b ) ) {
-				return false;
-			}
-			if ( ! gutenberg_cover_bindings_args_equal( $value, $b[ $key ] ) ) {
-				return false;
-			}
-		}
-		return true;
-	}
-}
-
 if ( ! function_exists( 'gutenberg_cover_bindings_is_active' ) ) {
 	/**
-	 * Whether a parsed Cover has both `id` and `url` bound to the same source instance.
-	 *
-	 * Server-side mirror of `useCoverBindingState`'s `bindingActive`. A
-	 * `__default` entry from `core/pattern-overrides` counts as active because
-	 * Core's `process_block_bindings` materialises it into per-attribute slots
-	 * before resolution.
+	 * Whether a parsed Cover has a `url` binding (with or without an `id`
+	 * binding). A `__default` entry counts. Server-side mirror of
+	 * `useCoverBindingState`'s `bindingActive`.
 	 *
 	 * @since 7.1.0
 	 */
@@ -101,21 +62,7 @@ if ( ! function_exists( 'gutenberg_cover_bindings_is_active' ) ) {
 		if ( empty( $bindings ) || ! is_array( $bindings ) ) {
 			return false;
 		}
-
-		if ( isset( $bindings['__default']['source'] ) && 'core/pattern-overrides' === $bindings['__default']['source'] ) {
-			return true;
-		}
-
-		$id_binding  = $bindings['id'] ?? null;
-		$url_binding = $bindings['url'] ?? null;
-		if ( empty( $id_binding ) || empty( $url_binding ) ) {
-			return false;
-		}
-
-		$same_source = ( $id_binding['source'] ?? null ) === ( $url_binding['source'] ?? null );
-		$same_args   = gutenberg_cover_bindings_args_equal( $id_binding['args'] ?? null, $url_binding['args'] ?? null );
-
-		return $same_source && $same_args;
+		return isset( $bindings['__default'] ) || isset( $bindings['url'] );
 	}
 }
 
@@ -182,8 +129,11 @@ if ( ! function_exists( 'gutenberg_cover_bindings_rewrite_image' ) ) {
 	 * @access private
 	 */
 	function gutenberg_cover_bindings_rewrite_image( string $content, string $resolved_url, int $resolved_id, array $attrs ): string {
-		$alt       = trim( strip_tags( (string) get_post_meta( $resolved_id, '_wp_attachment_image_alt', true ) ) );
-		$size_slug = isset( $attrs['sizeSlug'] ) && '' !== $attrs['sizeSlug']
+		$alt           = $resolved_id > 0
+			? trim( strip_tags( (string) get_post_meta( $resolved_id, '_wp_attachment_image_alt', true ) ) )
+			: '';
+		$wp_image_cls  = $resolved_id > 0 ? ' wp-image-' . $resolved_id : '';
+		$size_slug     = isset( $attrs['sizeSlug'] ) && '' !== $attrs['sizeSlug']
 			? ' size-' . $attrs['sizeSlug']
 			: '';
 
@@ -210,8 +160,8 @@ if ( ! function_exists( 'gutenberg_cover_bindings_rewrite_image' ) ) {
 			);
 
 			$rebuilt_img = sprintf(
-				'<img class="wp-block-cover__image-background wp-image-%d%s" alt="%s" src="%s" data-object-fit="cover"%s />',
-				$resolved_id,
+				'<img class="wp-block-cover__image-background%s%s" alt="%s" src="%s" data-object-fit="cover"%s />',
+				esc_attr( $wp_image_cls ),
 				esc_attr( $size_slug ),
 				esc_attr( $alt ),
 				esc_url( $resolved_url ),
@@ -249,7 +199,9 @@ if ( ! function_exists( 'gutenberg_cover_bindings_rewrite_image' ) ) {
 				$processor->remove_class( $cls );
 			}
 		}
-		$processor->add_class( 'wp-image-' . $resolved_id );
+		if ( $resolved_id > 0 ) {
+			$processor->add_class( 'wp-image-' . $resolved_id );
+		}
 
 		return $processor->get_updated_html();
 	}
@@ -278,24 +230,22 @@ if ( ! function_exists( 'gutenberg_cover_bindings_render_block' ) ) {
 		}
 
 		if ( ! gutenberg_cover_bindings_is_active( $attrs ) ) {
-			// AC-6: inactive cover-relevant bindings strip the saved image.
-			// AC-20: genuinely unbound covers pass through.
-			$bindings = $attrs['metadata']['bindings'] ?? null;
-			if ( is_array( $bindings ) && ( isset( $bindings['__default'] ) || isset( $bindings['id'] ) || isset( $bindings['url'] ) ) ) {
-				return gutenberg_cover_bindings_strip_image( $block_content );
-			}
 			return $block_content;
 		}
 
 		$url = $attrs['url'] ?? null;
-		$id  = (int) ( $attrs['id'] ?? 0 );
-		if ( empty( $url ) || empty( $id ) ) {
+		if ( empty( $url ) ) {
 			return gutenberg_cover_bindings_strip_image( $block_content );
 		}
 
-		$attachment = get_post( $id );
-		if ( ! $attachment || 'attachment' !== $attachment->post_type ) {
-			return gutenberg_cover_bindings_strip_image( $block_content );
+		// `id` is optional. When present and resolving to a non-attachment,
+		// strip — that's the explicit "unresolvable internal media" state.
+		$id = (int) ( $attrs['id'] ?? 0 );
+		if ( $id > 0 ) {
+			$attachment = get_post( $id );
+			if ( ! $attachment || 'attachment' !== $attachment->post_type ) {
+				return gutenberg_cover_bindings_strip_image( $block_content );
+			}
 		}
 
 		$block_content = gutenberg_cover_bindings_rewrite_image( $block_content, (string) $url, $id, $attrs );

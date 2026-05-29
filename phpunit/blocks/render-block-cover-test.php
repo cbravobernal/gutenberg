@@ -271,25 +271,6 @@ class Tests_Blocks_Render_Cover extends WP_UnitTestCase {
 	}
 
 	// AC-6: bindings with mismatched sources strip the saved image element.
-	public function test_mismatched_source_strips_image() {
-		$this->register_test_source(
-			function () {
-				return 'unused';
-			}
-		);
-
-		$parsed_block = $this->build_bound_cover_block(
-			self::DEFAULT_SAVED_MARKUP,
-			array(),
-			array(
-				'id'  => array( 'source' => self::TEST_SOURCE_NAME ),
-				'url' => array( 'source' => 'test/other-source-that-does-not-exist' ),
-			)
-		);
-
-		$this->assertStringNotContainsString( 'wp-block-cover__image-background', render_block( $parsed_block ) );
-	}
-
 	// AC-5: resolved URL with an `id` that is not an attachment (e.g. a post id)
 	// strips the saved image — internal-only media is required.
 	public function test_external_url_strips_image() {

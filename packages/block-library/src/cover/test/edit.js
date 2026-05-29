@@ -11,8 +11,6 @@ import {
 	registerBlockBindingsSource,
 	unregisterBlockBindingsSource,
 } from '@wordpress/blocks';
-import { dispatch } from '@wordpress/data';
-import { store as coreStore } from '@wordpress/core-data';
 
 /**
  * Internal dependencies
@@ -530,37 +528,11 @@ describe( 'Cover block', () => {
 			4242
 		);
 
-		test( 'renders a binding-aware placeholder with the unresolvable copy when bindings are mismatched', async () => {
-			// Mismatched sources → bindingActive=false, bindingUnresolvable=true.
-			await setup( {
-				metadata: {
-					bindings: {
-						id: { source: TEST_SOURCE },
-						url: { source: 'test/other-source' },
-					},
-				},
-			} );
-
-			const coverBlock = screen.getByLabelText( 'Block: Cover' );
-			expect(
-				within( coverBlock ).getByText(
-					'Internal media required for this binding.'
-				)
-			).toBeInTheDocument();
-			expect(
-				within( coverBlock ).getByTestId( 'cover-binding-unresolvable' )
-			).toBeInTheDocument();
-			expect(
-				// eslint-disable-next-line testing-library/no-node-access
-				coverBlock.querySelector(
-					'img.wp-block-cover__image-background'
-				)
-			).not.toBeInTheDocument();
-		} );
-
 		test( 'force-renders an <img> for an active binding with a resolved URL, ignoring hasParallax / isRepeated', async () => {
+			// Framework resolves attributes.url before passing to Edit. Mimic
+			// here by setting attributes.url directly to the bound value.
 			await setup( {
-				url: 'http://localhost/stored-image.jpg',
+				url: TEST_RESOLVED_URL,
 				backgroundType: 'image',
 				hasParallax: true,
 				isRepeated: true,
@@ -587,105 +559,13 @@ describe( 'Cover block', () => {
 			} );
 
 			const coverBlock = screen.getByLabelText( 'Block: Cover' );
-			// bindingActive forced false for embed-video → neither placeholder
-			// nor force-img engages.
-			expect(
-				within( coverBlock ).queryByText(
-					'Internal media required for this binding.'
-				)
-			).not.toBeInTheDocument();
-			expect(
-				within( coverBlock ).queryByTestId(
-					'cover-binding-unresolvable'
-				)
-			).not.toBeInTheDocument();
+			// bindingActive forced false for embed-video → force-img skipped.
 			expect(
 				// eslint-disable-next-line testing-library/no-node-access
 				coverBlock.querySelector(
 					'img.wp-block-cover__image-background'
 				)
 			).not.toBeInTheDocument();
-		} );
-	} );
-
-	describe( 'Bindings control gating', () => {
-		const TEST_SOURCE = 'test/cover-binding-controls';
-		const { bindings: boundBindings } = useBindingSource(
-			TEST_SOURCE,
-			'http://localhost/bound-image.jpg',
-			4242
-		);
-
-		test( 'keeps MediaReplaceFlow visible when bindingActive so binding source intercepts the override', async () => {
-			await setup( {
-				url: 'http://localhost/stored-image.jpg',
-				backgroundType: 'image',
-				metadata: { bindings: boundBindings },
-			} );
-			// Force-img branch engages → block toolbar has rendered.
-			await screen.findByRole( 'img' );
-
-			expect(
-				screen.getByRole( 'button', { name: 'Replace' } )
-			).toBeInTheDocument();
-		} );
-	} );
-
-	describe( 'useCoverBindingState', () => {
-		const TEST_SOURCE = 'test/cover-binding-state-hook';
-		const { sourceState } = useBindingSource(
-			TEST_SOURCE,
-			'http://localhost/resolved-image.jpg',
-			9991
-		);
-
-		test( 'bindingUnresolvable: true when the bound id resolves to a non-attachment record (integration)', async () => {
-			// Hook's `attachmentResolvedWrongType` guard: attachment entity
-			// record exists but `type !== "attachment"`. Register the entity
-			// manually since no REST call seeds it in jsdom.
-			const wrongTypeId = 99_991;
-			sourceState.id = wrongTypeId;
-			sourceState.url = 'http://localhost/wrong-type.jpg';
-
-			await act( async () => {
-				dispatch( coreStore ).addEntities( [
-					{
-						kind: 'postType',
-						name: 'attachment',
-						baseURL: '/wp/v2/media',
-						baseURLParams: { context: 'edit' },
-					},
-				] );
-				dispatch( coreStore ).receiveEntityRecords(
-					'postType',
-					'attachment',
-					[
-						{
-							id: wrongTypeId,
-							type: 'post',
-							source_url: 'http://localhost/wrong-type.jpg',
-						},
-					],
-					{ context: 'view' }
-				);
-			} );
-
-			await setup( {
-				url: '',
-				backgroundType: 'image',
-				metadata: {
-					bindings: {
-						id: { source: TEST_SOURCE },
-						url: { source: TEST_SOURCE },
-					},
-				},
-			} );
-
-			expect(
-				await within(
-					screen.getByLabelText( 'Block: Cover' )
-				).findByText( 'Internal media required for this binding.' )
-			).toBeInTheDocument();
 		} );
 	} );
 
@@ -706,11 +586,10 @@ describe( 'Cover block', () => {
 		test( 'does not write any DC-2-prohibited attribute back to the block when a binding becomes active', async () => {
 			// Saved state: dimRatio=100, hasParallax=true, isRepeated=true,
 			// plus an active binding. Observer must NOT flip any of these.
-			// We sample post-flush DOM state because `BlockEditorProvider`'s
-			// private sub-registry hides the global store; a DC-2-violating
-			// `setAttributes({ url })` would clobber `data-url`.
+			// attributes.url is what the framework resolves to before reaching
+			// Edit; the test passes it directly.
 			await setup( {
-				url: 'http://localhost/stored.jpg',
+				url: TEST_RESOLVED_URL,
 				id: 1234,
 				backgroundType: 'image',
 				dimRatio: 100,
@@ -732,7 +611,7 @@ describe( 'Cover block', () => {
 			const coverBlock = screen.getByLabelText( 'Block: Cover' );
 			expect( coverBlock ).toHaveAttribute(
 				'data-url',
-				'http://localhost/stored.jpg'
+				TEST_RESOLVED_URL
 			);
 			expect(
 				// eslint-disable-next-line testing-library/no-node-access

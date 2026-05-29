@@ -119,8 +119,9 @@ function CoverEdit( {
 		poster,
 	} = attributes;
 
-	const { bindingActive, bindingUnresolvable, bindingResolvedUrl } =
-		useCoverBindingState( { clientId, attributes, context } );
+	const { bindingActive, bindingResolvedUrl } = useCoverBindingState( {
+		attributes,
+	} );
 
 	// Race-token guard: stale `getMediaColor` resolutions bail.
 	const raceTokenRef = useRef( 0 );
@@ -435,7 +436,12 @@ function CoverEdit( {
 
 	const isUploadingMedia = isTemporaryMedia( id, url );
 
-	const isImageBackground = IMAGE_BACKGROUND_TYPE === backgroundType;
+	// On bound covers inside a pattern instance, the framework drops non-bound
+	// attrs (incl. backgroundType) from setBoundAttributes — fall back to a
+	// resolved-url presence check so the force-img branch still engages.
+	const isImageBackground =
+		IMAGE_BACKGROUND_TYPE === backgroundType ||
+		( bindingActive && !! bindingResolvedUrl );
 	const isVideoBackground = VIDEO_BACKGROUND_TYPE === backgroundType;
 	const isEmbedVideoBackground =
 		EMBED_VIDEO_BACKGROUND_TYPE === backgroundType;
@@ -617,50 +623,6 @@ function CoverEdit( {
 	};
 
 	if ( ! useFeaturedImage && ! hasInnerBlocks && ! hasBackground ) {
-		if ( bindingActive || bindingUnresolvable ) {
-			// Bound covers replace the upload affordance with a Placeholder:
-			// unresolvable → discoverable instruction; pending → silent.
-			return (
-				<>
-					{ blockControls }
-					{ inspectorControls }
-					{ hasNonContentControls && isSelected && (
-						<ResizableCoverPopover { ...resizableCoverProps } />
-					) }
-					<TagName
-						{ ...blockProps }
-						className={ clsx(
-							'is-placeholder',
-							blockProps.className
-						) }
-						style={ {
-							...blockProps.style,
-							minHeight: minHeightWithUnit || undefined,
-						} }
-					>
-						{ resizeListener }
-						<Placeholder
-							data-testid={
-								bindingUnresolvable
-									? 'cover-binding-unresolvable'
-									: undefined
-							}
-							className={ `wp-block-cover__binding-${
-								bindingUnresolvable ? 'unresolvable' : 'pending'
-							}` }
-							withIllustration
-							instructions={
-								bindingUnresolvable
-									? __(
-											'Internal media required for this binding.'
-									  )
-									: undefined
-							}
-						/>
-					</TagName>
-				</>
-			);
-		}
 		return (
 			<>
 				{ blockControls }
@@ -733,8 +695,7 @@ function CoverEdit( {
 					/>
 				) }
 
-				{ ! bindingUnresolvable &&
-					effectiveUrl &&
+				{ effectiveUrl &&
 					isImageBackground &&
 					// OQ-5: bound covers force-render an <img> regardless of
 					// hasParallax/isRepeated.

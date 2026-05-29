@@ -805,30 +805,6 @@ test.describe( 'Cover — Block Bindings — Pattern Overrides round-trip', () =
 				page.locator( '.wp-block-cover__image-background' )
 			).toHaveAttribute( 'src', defaultMedia.source_url );
 		} );
-
-		await test.step( 'Unresolvable — mismatched-source bindings surface the i18n affordance', async () => {
-			await admin.createNewPost();
-			await editor.insertBlock( {
-				name: 'core/cover',
-				attributes: {
-					metadata: {
-						name: 'Mismatched Cover',
-						bindings: {
-							id: { source: 'core/pattern-overrides' },
-							url: {
-								source: 'core/post-meta',
-								args: { key: 'url_custom_field' },
-							},
-						},
-					},
-				},
-			} );
-
-			// OQ-6: i18n message is the user-facing affordance.
-			await expect(
-				page.getByText( 'Internal media required for this binding.' )
-			).toBeVisible();
-		} );
 	} );
 } );
 
