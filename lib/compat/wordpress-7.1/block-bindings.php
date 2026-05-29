@@ -69,25 +69,6 @@ if ( ! function_exists( 'gutenberg_cover_bindings_is_active' ) ) {
 	}
 }
 
-if ( ! function_exists( 'gutenberg_cover_bindings_has_cover_relevant_configuration' ) ) {
-	/**
-	 * Whether `metadata.bindings` mentions `__default`, `id`, or `url`.
-	 *
-	 * Distinguishes genuinely unbound covers (AC-20) from covers whose binding
-	 * config is present but inactive (AC-6).
-	 *
-	 * @since 7.1.0
-	 * @access private
-	 */
-	function gutenberg_cover_bindings_has_cover_relevant_configuration( array $attrs ): bool {
-		$bindings = $attrs['metadata']['bindings'] ?? null;
-		if ( empty( $bindings ) || ! is_array( $bindings ) ) {
-			return false;
-		}
-		return isset( $bindings['__default'] ) || isset( $bindings['id'] ) || isset( $bindings['url'] );
-	}
-}
-
 if ( ! function_exists( 'gutenberg_cover_bindings_prepare_block' ) ) {
 	/**
 	 * Forces `useFeaturedImage` off on bound covers before `WP_Block::render()`.
@@ -143,31 +124,6 @@ if ( ! function_exists( 'gutenberg_cover_bindings_strip_image' ) ) {
 			}
 		}
 		return $content;
-	}
-}
-
-if ( ! function_exists( 'gutenberg_cover_bindings_relax_dim_class' ) ) {
-	/**
-	 * Removes `has-background-dim-100` from the Cover overlay span.
-	 *
-	 * Stored `dimRatio: 100` is the saved default; on bound covers a fully-opaque
-	 * overlay would hide the image, so the effective dimRatio is 50 (OQ-4) and
-	 * `dimRatioToClass( 50 )` is null — i.e. just remove `dim-100`.
-	 *
-	 * @since 7.1.0
-	 * @access private
-	 */
-	function gutenberg_cover_bindings_relax_dim_class( string $content ): string {
-		$processor = new WP_HTML_Tag_Processor( $content );
-		while ( $processor->next_tag(
-			array(
-				'tag_name'   => 'SPAN',
-				'class_name' => 'wp-block-cover__background',
-			)
-		) ) {
-			$processor->remove_class( 'has-background-dim-100' );
-		}
-		return $processor->get_updated_html();
 	}
 }
 
@@ -289,7 +245,8 @@ if ( ! function_exists( 'gutenberg_cover_bindings_render_block' ) ) {
 			// AC-6: cover-relevant binding config present but inactive — strip the
 			// saved image so the cover renders overlay-only. AC-20: genuinely
 			// unbound covers pass through unchanged.
-			if ( gutenberg_cover_bindings_has_cover_relevant_configuration( $attrs ) ) {
+			$bindings = $attrs['metadata']['bindings'] ?? null;
+			if ( ! empty( $bindings ) && is_array( $bindings ) && ( isset( $bindings['__default'] ) || isset( $bindings['id'] ) || isset( $bindings['url'] ) ) ) {
 				return gutenberg_cover_bindings_strip_image( $block_content );
 			}
 			return $block_content;
@@ -314,9 +271,19 @@ if ( ! function_exists( 'gutenberg_cover_bindings_render_block' ) ) {
 			$attrs
 		);
 
-		// AC-16 / OQ-4: relax stored dimRatio:100 so the bound image is visible.
+		// AC-16 / OQ-4: relax stored dimRatio:100 so the bound image is visible
+		// (effective dimRatio is 50 and `dimRatioToClass(50)` is null).
 		if ( 100 === (int) ( $attrs['dimRatio'] ?? 100 ) ) {
-			$block_content = gutenberg_cover_bindings_relax_dim_class( $block_content );
+			$processor = new WP_HTML_Tag_Processor( $block_content );
+			while ( $processor->next_tag(
+				array(
+					'tag_name'   => 'SPAN',
+					'class_name' => 'wp-block-cover__background',
+				)
+			) ) {
+				$processor->remove_class( 'has-background-dim-100' );
+			}
+			$block_content = $processor->get_updated_html();
 		}
 
 		return $block_content;
