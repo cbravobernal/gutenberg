@@ -119,12 +119,10 @@ function CoverEdit( {
 		poster,
 	} = attributes;
 
-	// Single source of truth for binding state.
 	const { bindingActive, bindingUnresolvable, bindingResolvedUrl } =
 		useCoverBindingState( { clientId, attributes, context } );
 
-	// Race-token guard for the `effectiveUrl` observer: stale `getMediaColor`
-	// resolutions bail when their captured token no longer matches.
+	// Race-token guard: stale `getMediaColor` resolutions bail.
 	const raceTokenRef = useRef( 0 );
 
 	const [ featuredImage ] = useEntityProp(
@@ -138,8 +136,7 @@ function CoverEdit( {
 	const { __unstableMarkNextChangeAsNotPersistent } =
 		useDispatch( blockEditorStore );
 
-	// Ref to access latest values after async operations (e.g. getMediaColor),
-	// avoiding stale values that could overwrite concurrent remote changes.
+	// Latest attributes/overlayColor for post-await reads (avoid stale closures).
 	const propsRef = useRef( { attributes, overlayColor } );
 	useLayoutEffect( () => {
 		propsRef.current = { attributes, overlayColor };
@@ -167,33 +164,27 @@ function CoverEdit( {
 		media?.media_details?.sizes?.[ sizeSlug ]?.source_url ??
 		media?.source_url;
 
-	// Source-agnostic URL: bound URL wins, else featured-image, else stored.
+	// Source-agnostic URL: bound URL wins, else featured-image, else stored
+	// (sanitized through wp_kses).
 	const effectiveUrl =
 		bindingResolvedUrl ??
 		( useFeaturedImage
 			? mediaUrl
-			: // Ensure the url is not malformed due to sanitization through `wp_kses`.
-			  originalUrl?.replaceAll( '&amp;', '&' ) );
+			: originalUrl?.replaceAll( '&amp;', '&' ) );
 
-	// Default `dimRatio: 100` would hide a bound image, so relax it to 50
-	// while a binding is active and an image is available (§5.2).
+	// §5.2: relax dimRatio 100 → 50 so the bound image is visible.
 	const effectiveDimRatio =
 		bindingActive && dimRatio === 100 && effectiveUrl ? 50 : dimRatio;
 
-	// Source-agnostic URL-resolved observer: recomputes `overlayColor` (when
-	// not user-pinned) and `isDark` on every `effectiveUrl` change. Race-token
-	// bookkeeping discards stale resolutions. DC-2: only `{ isDark }` is
-	// written back.
+	// DC-2: URL-resolved observer writes back only `{ isDark }`. Race-token
+	// bookkeeping discards stale resolutions.
 	const onUrlResolved = useEffectEvent( async ( resolvedUrl ) => {
 		if ( ! resolvedUrl ) {
 			return;
 		}
-
 		const myToken = ++raceTokenRef.current;
 		const averageBackgroundColor = await getMediaColor( resolvedUrl );
-
 		if ( myToken !== raceTokenRef.current ) {
-			// A newer resolution superseded ours.
 			return;
 		}
 
@@ -208,24 +199,22 @@ function CoverEdit( {
 			setOverlayColor( newOverlayColor );
 		}
 
-		// Mirror the `effectiveDimRatio` derivation using the latest
-		// attributes so the dark/light decision matches what the user sees.
+		// Mirror `effectiveDimRatio` against the latest attrs.
 		const latestEffectiveDimRatio =
 			bindingActive && currentAttrs.dimRatio === 100 && resolvedUrl
 				? 50
 				: currentAttrs.dimRatio;
-
-		const newIsDark = compositeIsDark(
-			latestEffectiveDimRatio,
-			newOverlayColor,
-			averageBackgroundColor
-		);
 		__unstableMarkNextChangeAsNotPersistent();
-		setAttributes( { isDark: newIsDark } );
+		setAttributes( {
+			isDark: compositeIsDark(
+				latestEffectiveDimRatio,
+				newOverlayColor,
+				averageBackgroundColor
+			),
+		} );
 	} );
 
-	// DC-1: single observer keyed on `effectiveUrl`. `onUrlResolved` is stable
-	// via `useEffectEvent` so it deliberately stays out of the dep array.
+	// DC-1: single observer keyed on `effectiveUrl`. `onUrlResolved` is stable.
 	useEffect( () => {
 		onUrlResolved( effectiveUrl );
 	}, [ effectiveUrl ] );
@@ -630,9 +619,8 @@ function CoverEdit( {
 
 	if ( ! useFeaturedImage && ! hasInnerBlocks && ! hasBackground ) {
 		if ( bindingActive || bindingUnresolvable ) {
-			// Bound covers never surface the standard upload affordance.
-			// Unresolvable bindings get a discoverable instruction; pending
-			// bindings get a silent illustration until `effectiveUrl` arrives.
+			// Bound covers replace the upload affordance with a Placeholder:
+			// unresolvable → discoverable instruction; pending → silent.
 			return (
 				<>
 					{ blockControls }
@@ -658,11 +646,9 @@ function CoverEdit( {
 									? 'cover-binding-unresolvable'
 									: undefined
 							}
-							className={
-								bindingUnresolvable
-									? 'wp-block-cover__binding-unresolvable'
-									: 'wp-block-cover__binding-pending'
-							}
+							className={ `wp-block-cover__binding-${
+								bindingUnresolvable ? 'unresolvable' : 'pending'
+							}` }
 							withIllustration
 							instructions={
 								bindingUnresolvable
@@ -750,45 +736,32 @@ function CoverEdit( {
 
 				{ ! bindingUnresolvable &&
 					effectiveUrl &&
-					isImageBackground && (
-						<>
-							{ bindingActive && (
-								// Bound covers force-render an <img> regardless
-								// of hasParallax/isRepeated (Design OQ-5).
-								<img
-									ref={ mediaElement }
-									className="wp-block-cover__image-background"
-									alt={ alt }
-									src={ effectiveUrl }
-									style={ mediaStyle }
-								/>
+					isImageBackground &&
+					// OQ-5: bound covers force-render an <img> regardless of
+					// hasParallax/isRepeated.
+					( bindingActive || isImgElement ? (
+						<img
+							ref={ mediaElement }
+							className="wp-block-cover__image-background"
+							alt={ alt }
+							src={ bindingActive ? effectiveUrl : url }
+							style={ mediaStyle }
+						/>
+					) : (
+						<div
+							ref={ mediaElement }
+							role={ alt ? 'img' : undefined }
+							aria-label={ alt ? alt : undefined }
+							className={ clsx(
+								classes,
+								'wp-block-cover__image-background'
 							) }
-							{ ! bindingActive &&
-								( isImgElement ? (
-									<img
-										ref={ mediaElement }
-										className="wp-block-cover__image-background"
-										alt={ alt }
-										src={ url }
-										style={ mediaStyle }
-									/>
-								) : (
-									<div
-										ref={ mediaElement }
-										role={ alt ? 'img' : undefined }
-										aria-label={ alt ? alt : undefined }
-										className={ clsx(
-											classes,
-											'wp-block-cover__image-background'
-										) }
-										style={ {
-											backgroundImage,
-											backgroundPosition,
-										} }
-									/>
-								) ) }
-						</>
-					) }
+							style={ {
+								backgroundImage,
+								backgroundPosition,
+							} }
+						/>
+					) ) }
 				{ url && isVideoBackground && (
 					<video
 						ref={ mediaElement }
