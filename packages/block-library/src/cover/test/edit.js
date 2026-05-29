@@ -616,7 +616,7 @@ describe( 'Cover block', () => {
 			4242
 		);
 
-		test( 'hides the MediaReplaceFlow toolbar button when bindingActive', async () => {
+		test( 'keeps MediaReplaceFlow visible when bindingActive so binding source intercepts the override', async () => {
 			await setup( {
 				url: 'http://localhost/stored-image.jpg',
 				backgroundType: 'image',
@@ -626,11 +626,8 @@ describe( 'Cover block', () => {
 			await screen.findByRole( 'img' );
 
 			expect(
-				screen.queryByRole( 'button', { name: 'Replace' } )
-			).not.toBeInTheDocument();
-			expect(
-				screen.queryByRole( 'button', { name: 'Add media' } )
-			).not.toBeInTheDocument();
+				screen.getByRole( 'button', { name: 'Replace' } )
+			).toBeInTheDocument();
 		} );
 	} );
 

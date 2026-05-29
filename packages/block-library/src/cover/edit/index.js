@@ -575,7 +575,6 @@ function CoverEdit( {
 			toggleUseFeaturedImage={ toggleUseFeaturedImage }
 			onClearMedia={ onClearMedia }
 			blockEditingMode={ blockEditingMode }
-			bindingActive={ bindingActive }
 		/>
 	);
 

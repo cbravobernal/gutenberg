@@ -658,12 +658,14 @@ test.describe( 'Cover — Block Bindings — Pattern Overrides round-trip', () =
 				} )
 			).toHaveCount( 0 );
 
-			// AC-13/14: MediaReplaceFlow toggle (Replace + Add media) absent.
+			// MediaReplaceFlow stays visible on bound covers so the binding
+			// source (Pattern Overrides here) intercepts per-instance
+			// `setAttributes({ url, id })` writes.
 			await expect(
 				getBlockToolbar().getByRole( 'button', {
 					name: /^(Replace|Add media)$/,
 				} )
-			).toHaveCount( 0 );
+			).toBeVisible();
 
 			// AC-10: Reset disabled without override.
 			await expect(
