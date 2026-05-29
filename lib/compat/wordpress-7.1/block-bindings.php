@@ -179,6 +179,29 @@ if ( ! function_exists( 'gutenberg_cover_bindings_rewrite_image' ) ) {
 				'class_name' => 'wp-block-cover__image-background',
 			)
 		) ) {
+			// No image element saved (Cover authored without picking media,
+			// then bound). Inject a fresh `<img>` before the overlay `<span>`.
+			$object_position_attrs = '' === $object_position ? '' : sprintf(
+				' data-object-position="%s" style="object-position:%s;"',
+				esc_attr( $object_position ),
+				esc_attr( $object_position )
+			);
+			$injected_img          = sprintf(
+				'<img class="wp-block-cover__image-background%s%s" alt="%s" src="%s" data-object-fit="cover"%s />',
+				esc_attr( $wp_image_cls ),
+				esc_attr( $size_slug ),
+				esc_attr( $alt ),
+				esc_url( $resolved_url ),
+				$object_position_attrs
+			);
+			if ( 1 === preg_match(
+				'/<span\s+[^>]*\bwp-block-cover__background\b[^>]*>/U',
+				$content,
+				$sm,
+				PREG_OFFSET_CAPTURE
+			) ) {
+				return substr( $content, 0, $sm[0][1] ) . $injected_img . substr( $content, $sm[0][1] );
+			}
 			return $content;
 		}
 
