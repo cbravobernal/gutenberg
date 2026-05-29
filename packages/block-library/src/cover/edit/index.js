@@ -119,19 +119,12 @@ function CoverEdit( {
 		poster,
 	} = attributes;
 
-	// Single source of truth for binding state. Drives the derived values
-	// (`effectiveUrl`, `effectiveDimRatio`) and the binding-aware render
-	// branches below.
+	// Single source of truth for binding state.
 	const { bindingActive, bindingUnresolvable, bindingResolvedUrl } =
-		useCoverBindingState( {
-			clientId,
-			attributes,
-			context,
-		} );
+		useCoverBindingState( { clientId, attributes, context } );
 
-	// Race-token guard for the source-agnostic `effectiveUrl` observer below.
-	// Incremented on each invocation; stale `getMediaColor` resolutions bail
-	// when their captured token no longer matches `raceTokenRef.current`.
+	// Race-token guard for the `effectiveUrl` observer: stale `getMediaColor`
+	// resolutions bail when their captured token no longer matches.
 	const raceTokenRef = useRef( 0 );
 
 	const [ featuredImage ] = useEntityProp(
@@ -174,11 +167,7 @@ function CoverEdit( {
 		media?.media_details?.sizes?.[ sizeSlug ]?.source_url ??
 		media?.source_url;
 
-	// Source-agnostic URL to be displayed in the editor. Prefers the bound
-	// source's resolved URL; otherwise falls back to the trunk derivation
-	// (featured image when `useFeaturedImage`, otherwise the stored URL with
-	// HTML-entity decoding). DC-3: the downstream observer treats this value
-	// without branching on which branch produced it.
+	// Source-agnostic URL: bound URL wins, else featured-image, else stored.
 	const effectiveUrl =
 		bindingResolvedUrl ??
 		( useFeaturedImage
@@ -186,35 +175,15 @@ function CoverEdit( {
 			: // Ensure the url is not malformed due to sanitization through `wp_kses`.
 			  originalUrl?.replaceAll( '&amp;', '&' ) );
 
-	// Preview-time dim ratio. Default `dimRatio === 100` would produce an
-	// opaque overlay on bound covers (hiding the resolved image); §5.2 relaxes
-	// it to 50 only when the binding is active AND there is an image to show.
-	// In every other case this equals `dimRatio`, preserving trunk behaviour.
+	// Default `dimRatio: 100` would hide a bound image, so relax it to 50
+	// while a binding is active and an image is available (§5.2).
 	const effectiveDimRatio =
 		bindingActive && dimRatio === 100 && effectiveUrl ? 50 : dimRatio;
 
-	/**
-	 * Source-agnostic URL-resolved observer.
-	 *
-	 * Recomputes `overlayColor` (when the user has not pinned an overlay
-	 * colour) and `isDark` whenever the effective URL changes — regardless of
-	 * whether the change came from a manual selection, `useFeaturedImage`, or
-	 * a bound source resolving. `useEffectEvent` gives us a stable identity
-	 * for use inside the single `useEffect` below while reading the latest
-	 * `attributes` / `overlayColor` through `propsRef.current`. The
-	 * race-token bookkeeping ensures that when two URL changes race, only
-	 * the most recent `getMediaColor` resolution writes back.
-	 *
-	 * DC-2: the only attribute write here is `{ isDark }`, which is not in
-	 * the DC-2 prohibition list. The `setOverlayColor( avg )` carve-out
-	 * preserves trunk behaviour (the identical call site previously fired
-	 * inside the `mediaUrl` effect) and runs identically for manual,
-	 * featured-image, and binding-sourced URLs — i.e. source-agnostic.
-	 *
-	 * @param {string|undefined} resolvedUrl The URL whose dominant colour
-	 *                                       drives the overlay derivation.
-	 *                                       Skipped when falsy.
-	 */
+	// Source-agnostic URL-resolved observer: recomputes `overlayColor` (when
+	// not user-pinned) and `isDark` on every `effectiveUrl` change. Race-token
+	// bookkeeping discards stale resolutions. DC-2: only `{ isDark }` is
+	// written back.
 	const onUrlResolved = useEffectEvent( async ( resolvedUrl ) => {
 		if ( ! resolvedUrl ) {
 			return;
@@ -224,8 +193,7 @@ function CoverEdit( {
 		const averageBackgroundColor = await getMediaColor( resolvedUrl );
 
 		if ( myToken !== raceTokenRef.current ) {
-			// A newer resolution superseded ours; bail out so we do not
-			// clobber the latest derivation.
+			// A newer resolution superseded ours.
 			return;
 		}
 
@@ -256,10 +224,8 @@ function CoverEdit( {
 		setAttributes( { isDark: newIsDark } );
 	} );
 
-	// `onUrlResolved` is created by `useEffectEvent`, which guarantees a
-	// stable identity across renders — so it intentionally does not appear
-	// in this dependency array. Re-run only when the source-agnostic
-	// `effectiveUrl` changes (DC-1: single observer keyed on `effectiveUrl`).
+	// DC-1: single observer keyed on `effectiveUrl`. `onUrlResolved` is stable
+	// via `useEffectEvent` so it deliberately stays out of the dep array.
 	useEffect( () => {
 		onUrlResolved( effectiveUrl );
 	}, [ effectiveUrl ] );
@@ -664,13 +630,9 @@ function CoverEdit( {
 
 	if ( ! useFeaturedImage && ! hasInnerBlocks && ! hasBackground ) {
 		if ( bindingActive || bindingUnresolvable ) {
-			// Bound covers never expose the upload / featured-image
-			// affordances surfaced by the standard `<CoverPlaceholder>`.
-			// When the binding has settled into an unresolvable state we
-			// surface a discoverable affordance ("Internal media required
-			// for this binding."); otherwise the placeholder is silent and
-			// the single observer will populate the cover once
-			// `effectiveUrl` arrives.
+			// Bound covers never surface the standard upload affordance.
+			// Unresolvable bindings get a discoverable instruction; pending
+			// bindings get a silent illustration until `effectiveUrl` arrives.
 			return (
 				<>
 					{ blockControls }
@@ -690,21 +652,26 @@ function CoverEdit( {
 						} }
 					>
 						{ resizeListener }
-						{ bindingUnresolvable ? (
-							<Placeholder
-								data-testid="cover-binding-unresolvable"
-								className="wp-block-cover__binding-unresolvable"
-								withIllustration
-								instructions={ __(
-									'Internal media required for this binding.'
-								) }
-							/>
-						) : (
-							<Placeholder
-								className="wp-block-cover__binding-pending"
-								withIllustration
-							/>
-						) }
+						<Placeholder
+							data-testid={
+								bindingUnresolvable
+									? 'cover-binding-unresolvable'
+									: undefined
+							}
+							className={
+								bindingUnresolvable
+									? 'wp-block-cover__binding-unresolvable'
+									: 'wp-block-cover__binding-pending'
+							}
+							withIllustration
+							instructions={
+								bindingUnresolvable
+									? __(
+											'Internal media required for this binding.'
+									  )
+									: undefined
+							}
+						/>
 					</TagName>
 				</>
 			);
@@ -786,10 +753,8 @@ function CoverEdit( {
 					isImageBackground && (
 						<>
 							{ bindingActive && (
-								// Bound covers ignore the `isImgElement` switch so
-								// that pre-existing `hasParallax`/`isRepeated`
-								// attributes never substitute a `<div>` for the
-								// bound `<img>` (force-off per Design OQ-5).
+								// Bound covers force-render an <img> regardless
+								// of hasParallax/isRepeated (Design OQ-5).
 								<img
 									ref={ mediaElement }
 									className="wp-block-cover__image-background"
