@@ -23,6 +23,30 @@ import EmbedVideoUrlInput from './embed-video-url-input';
 
 const { cleanEmptyObject } = unlock( blockEditorPrivateApis );
 
+/**
+ * Block toolbar controls rendered for the Cover block.
+ *
+ * @param {Object}   props                        The component props.
+ * @param {Object}   props.attributes             The block's stored attributes.
+ * @param {Function} props.setAttributes          Setter for the block's
+ *                                                attributes.
+ * @param {Function} props.onSelectMedia          Handler invoked when the
+ *                                                user selects a media item.
+ * @param {Object}   props.currentSettings        Source-agnostic snapshot of
+ *                                                the cover's render state
+ *                                                (`url`, `hasInnerBlocks`, …).
+ * @param {Function} props.toggleUseFeaturedImage Handler toggling
+ *                                                `useFeaturedImage`.
+ * @param {Function} props.onClearMedia           Handler that resets the
+ *                                                media attributes back to
+ *                                                their unbound default.
+ * @param {Function} props.onSelectEmbedUrl       Handler invoked when the
+ *                                                user picks an embed URL
+ *                                                from the "Embed video from
+ *                                                URL" affordance.
+ * @param {string}   props.blockEditingMode       Editing mode reported by
+ *                                                `useBlockEditingMode`.
+ */
 export default function CoverBlockControls( {
 	attributes,
 	setAttributes,
