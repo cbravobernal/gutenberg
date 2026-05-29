@@ -9,6 +9,22 @@
  * @package gutenberg
  */
 
+/**
+ * Saved-markup regex for the parallax/repeat `<div class="wp-block-cover__image-background">`
+ * element. The WP HTML API cannot delete elements or change tag names, so
+ * `preg_match` is the only way to locate the element for byte-offset splicing.
+ *
+ * Mirrors the pattern already in `packages/block-library/src/cover/index.php`.
+ */
+const GUTENBERG_COVER_BINDINGS_DIV_PATTERN = '/<div\s+[^>]*\bwp-block-cover__image-background\b[^>]*><\/div>/U';
+
+/**
+ * Saved-markup regex for the plain `<img class="wp-block-cover__image-background">`
+ * element used when neither parallax nor repeat is active. Used only by
+ * `strip_image` — `rewrite_image` mutates the `<img>` in place via Tag Processor.
+ */
+const GUTENBERG_COVER_BINDINGS_IMG_PATTERN = '/<img\s+[^>]*\bwp-block-cover__image-background\b[^>]*\/?\s*>/U';
+
 if ( ! function_exists( 'gutenberg_cover_bindings_add_supported_attributes' ) ) {
 	/**
 	 * Adds `id` and `url` to the bindings-supported attributes for `core/cover`.
@@ -145,10 +161,7 @@ if ( ! function_exists( 'gutenberg_cover_bindings_strip_image' ) ) {
 	 */
 	function gutenberg_cover_bindings_strip_image( string $content ): string {
 		// Parallax/repeat <div> form is probed first; <img>-only regex would miss it.
-		foreach ( array(
-			'/<div\s+[^>]*\bwp-block-cover__image-background\b[^>]*><\/div>/U',
-			'/<img\s+[^>]*\bwp-block-cover__image-background\b[^>]*\/?\s*>/U',
-		) as $pattern ) {
+		foreach ( array( GUTENBERG_COVER_BINDINGS_DIV_PATTERN, GUTENBERG_COVER_BINDINGS_IMG_PATTERN ) as $pattern ) {
 			if ( 1 === preg_match( $pattern, $content, $m, PREG_OFFSET_CAPTURE ) ) {
 				return substr( $content, 0, $m[0][1] ) . substr( $content, $m[0][1] + strlen( $m[0][0] ) );
 			}
@@ -189,7 +202,7 @@ if ( ! function_exists( 'gutenberg_cover_bindings_rewrite_image' ) ) {
 
 		// Parallax/repeat <div> form: rebuild as an <img>. Saved markup is
 		// the source of truth, NOT $attrs['hasParallax']/['isRepeated'].
-		if ( 1 === preg_match( '/<div\s+[^>]*\bwp-block-cover__image-background\b[^>]*><\/div>/U', $content, $m, PREG_OFFSET_CAPTURE ) ) {
+		if ( 1 === preg_match( GUTENBERG_COVER_BINDINGS_DIV_PATTERN, $content, $m, PREG_OFFSET_CAPTURE ) ) {
 			$object_position_attrs = '' === $object_position ? '' : sprintf(
 				' data-object-position="%s" style="object-position:%s;"',
 				esc_attr( $object_position ),
