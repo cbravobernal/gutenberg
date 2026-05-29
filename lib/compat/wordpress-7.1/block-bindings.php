@@ -273,21 +273,24 @@ if ( ! function_exists( 'gutenberg_cover_bindings_render_block' ) ) {
 
 		$block_content = gutenberg_cover_bindings_rewrite_image( $block_content, (string) $url, $id, $attrs );
 
-		// AC-16 / OQ-4: relax stored dimRatio:100 so the bound image is visible.
-		if ( 100 === (int) ( $attrs['dimRatio'] ?? 100 ) ) {
-			$processor = new WP_HTML_Tag_Processor( $block_content );
-			while ( $processor->next_tag(
-				array(
-					'tag_name'   => 'SPAN',
-					'class_name' => 'wp-block-cover__background',
-				)
-			) ) {
+		// Relax stored dimRatio:100 + strip the saved overlay color: stored
+		// `customOverlayColor` was derived from whatever image the cover was
+		// authored with, so it no longer matches the bound media.
+		$processor       = new WP_HTML_Tag_Processor( $block_content );
+		$relax_dim_class = 100 === (int) ( $attrs['dimRatio'] ?? 100 );
+		while ( $processor->next_tag(
+			array(
+				'tag_name'   => 'SPAN',
+				'class_name' => 'wp-block-cover__background',
+			)
+		) ) {
+			if ( $relax_dim_class ) {
 				$processor->remove_class( 'has-background-dim-100' );
 			}
-			$block_content = $processor->get_updated_html();
+			$processor->remove_attribute( 'style' );
 		}
 
-		return $block_content;
+		return $processor->get_updated_html();
 	}
 }
 
