@@ -74,7 +74,6 @@ if ( ! function_exists( 'gutenberg_cover_bindings_prepare_block' ) ) {
 	 * Forces `useFeaturedImage` off on bound covers before `WP_Block::render()`.
 	 *
 	 * AC-18: an active `id`+`url` binding always wins over `useFeaturedImage`.
-	 * Mutation is scoped to the in-flight `$parsed_block` only.
 	 *
 	 * @since 7.1.0
 	 */
@@ -85,12 +84,11 @@ if ( ! function_exists( 'gutenberg_cover_bindings_prepare_block' ) ) {
 
 		$attrs = $parsed_block['attrs'] ?? array();
 
-		// AC-21: never engage for embed-video covers.
-		if ( ! empty( $attrs['backgroundType'] ) && 'embed-video' === $attrs['backgroundType'] ) {
-			return $parsed_block;
-		}
-
-		if ( ! gutenberg_cover_bindings_is_active( $attrs ) ) {
+		// AC-21: skip embed-video covers.
+		if (
+			( $attrs['backgroundType'] ?? '' ) === 'embed-video' ||
+			! gutenberg_cover_bindings_is_active( $attrs )
+		) {
 			return $parsed_block;
 		}
 
@@ -112,15 +110,13 @@ if ( ! function_exists( 'gutenberg_cover_bindings_strip_image' ) ) {
 	 * @access private
 	 */
 	function gutenberg_cover_bindings_strip_image( string $content ): string {
-		// Parallax/repeat saved form is probed first; an <img>-only regex would miss it.
-		$form2_pattern = '/<div\s+[^>]*\bwp-block-cover__image-background\b[^>]*><\/div>/U';
-		$form1_pattern = '/<img\s+[^>]*\bwp-block-cover__image-background\b[^>]*\/?\s*>/U';
-
-		foreach ( array( $form2_pattern, $form1_pattern ) as $pattern ) {
-			if ( 1 === preg_match( $pattern, $content, $matches, PREG_OFFSET_CAPTURE ) ) {
-				$start  = $matches[0][1];
-				$length = strlen( $matches[0][0] );
-				return substr( $content, 0, $start ) . substr( $content, $start + $length );
+		// Parallax/repeat <div> form is probed first; <img>-only regex would miss it.
+		foreach ( array(
+			'/<div\s+[^>]*\bwp-block-cover__image-background\b[^>]*><\/div>/U',
+			'/<img\s+[^>]*\bwp-block-cover__image-background\b[^>]*\/?\s*>/U',
+		) as $pattern ) {
+			if ( 1 === preg_match( $pattern, $content, $m, PREG_OFFSET_CAPTURE ) ) {
+				return substr( $content, 0, $m[0][1] ) . substr( $content, $m[0][1] + strlen( $m[0][0] ) );
 			}
 		}
 		return $content;
@@ -139,14 +135,14 @@ if ( ! function_exists( 'gutenberg_cover_bindings_rewrite_image' ) ) {
 	 * @access private
 	 */
 	function gutenberg_cover_bindings_rewrite_image( string $content, string $resolved_url, int $resolved_id, array $attrs ): string {
-		$alt             = trim( strip_tags( (string) get_post_meta( $resolved_id, '_wp_attachment_image_alt', true ) ) );
-		$size_slug       = isset( $attrs['sizeSlug'] ) && '' !== $attrs['sizeSlug']
+		$alt       = trim( strip_tags( (string) get_post_meta( $resolved_id, '_wp_attachment_image_alt', true ) ) );
+		$size_slug = isset( $attrs['sizeSlug'] ) && '' !== $attrs['sizeSlug']
 			? ' size-' . $attrs['sizeSlug']
 			: '';
+
 		$object_position = '';
 		if (
-			isset( $attrs['focalPoint']['x'] ) &&
-			isset( $attrs['focalPoint']['y'] ) &&
+			isset( $attrs['focalPoint']['x'], $attrs['focalPoint']['y'] ) &&
 			is_numeric( $attrs['focalPoint']['x'] ) &&
 			is_numeric( $attrs['focalPoint']['y'] )
 		) {
@@ -157,22 +153,14 @@ if ( ! function_exists( 'gutenberg_cover_bindings_rewrite_image' ) ) {
 			);
 		}
 
-		// Parallax/repeat form: saved markup is the source of truth (NOT
-		// $attrs['hasParallax']/$attrs['isRepeated']) — the pattern matches the
-		// literal serialized form emitted by save.js.
-		$form2_pattern = '/<div\s+[^>]*\bwp-block-cover__image-background\b[^>]*><\/div>/U';
-		if ( 1 === preg_match( $form2_pattern, $content, $matches, PREG_OFFSET_CAPTURE ) ) {
-			$div_start  = $matches[0][1];
-			$div_length = strlen( $matches[0][0] );
-
-			$object_position_attrs = '';
-			if ( '' !== $object_position ) {
-				$object_position_attrs = sprintf(
-					' data-object-position="%s" style="object-position:%s;"',
-					esc_attr( $object_position ),
-					esc_attr( $object_position )
-				);
-			}
+		// Parallax/repeat <div> form: rebuild as an <img>. Saved markup is
+		// the source of truth, NOT $attrs['hasParallax']/['isRepeated'].
+		if ( 1 === preg_match( '/<div\s+[^>]*\bwp-block-cover__image-background\b[^>]*><\/div>/U', $content, $m, PREG_OFFSET_CAPTURE ) ) {
+			$object_position_attrs = '' === $object_position ? '' : sprintf(
+				' data-object-position="%s" style="object-position:%s;"',
+				esc_attr( $object_position ),
+				esc_attr( $object_position )
+			);
 
 			$rebuilt_img = sprintf(
 				'<img class="wp-block-cover__image-background wp-image-%d%s" alt="%s" src="%s" data-object-fit="cover"%s />',
@@ -183,39 +171,40 @@ if ( ! function_exists( 'gutenberg_cover_bindings_rewrite_image' ) ) {
 				$object_position_attrs
 			);
 
-			return substr( $content, 0, $div_start ) . $rebuilt_img . substr( $content, $div_start + $div_length );
+			return substr( $content, 0, $m[0][1] ) . $rebuilt_img . substr( $content, $m[0][1] + strlen( $m[0][0] ) );
 		}
 
 		// Plain <img> form: rewrite attributes in place.
 		$processor = new WP_HTML_Tag_Processor( $content );
-		if ( $processor->next_tag(
+		if ( ! $processor->next_tag(
 			array(
 				'tag_name'   => 'IMG',
 				'class_name' => 'wp-block-cover__image-background',
 			)
 		) ) {
-			$processor->set_attribute( 'src', $resolved_url );
-			$processor->set_attribute( 'alt', $alt );
-
-			// Remove any saved wp-image-{old} before adding the resolved one.
-			$class_list = $processor->class_list();
-			if ( null !== $class_list ) {
-				$wp_image_classes_to_remove = array();
-				foreach ( $class_list as $cls ) {
-					if ( 0 === strpos( $cls, 'wp-image-' ) ) {
-						$wp_image_classes_to_remove[] = $cls;
-					}
-				}
-				foreach ( $wp_image_classes_to_remove as $cls ) {
-					$processor->remove_class( $cls );
-				}
-			}
-			$processor->add_class( 'wp-image-' . $resolved_id );
-
-			return $processor->get_updated_html();
+			return $content;
 		}
 
-		return $content;
+		$processor->set_attribute( 'src', $resolved_url );
+		$processor->set_attribute( 'alt', $alt );
+
+		// Strip any saved wp-image-{old} before adding the resolved one.
+		// Collect first — remove_class while iterating the Generator is unsafe.
+		$class_list = $processor->class_list();
+		if ( null !== $class_list ) {
+			$to_remove = array();
+			foreach ( $class_list as $cls ) {
+				if ( 0 === strpos( $cls, 'wp-image-' ) ) {
+					$to_remove[] = $cls;
+				}
+			}
+			foreach ( $to_remove as $cls ) {
+				$processor->remove_class( $cls );
+			}
+		}
+		$processor->add_class( 'wp-image-' . $resolved_id );
+
+		return $processor->get_updated_html();
 	}
 }
 
@@ -236,43 +225,35 @@ if ( ! function_exists( 'gutenberg_cover_bindings_render_block' ) ) {
 
 		$attrs = $instance->attributes ?? array();
 
-		// AC-21: never engage for embed-video covers.
-		if ( ! empty( $attrs['backgroundType'] ) && 'embed-video' === $attrs['backgroundType'] ) {
+		// AC-21: skip embed-video covers.
+		if ( ( $attrs['backgroundType'] ?? '' ) === 'embed-video' ) {
 			return $block_content;
 		}
 
 		if ( ! gutenberg_cover_bindings_is_active( $attrs ) ) {
-			// AC-6: cover-relevant binding config present but inactive — strip the
-			// saved image so the cover renders overlay-only. AC-20: genuinely
-			// unbound covers pass through unchanged.
+			// AC-6: inactive cover-relevant bindings strip the saved image.
+			// AC-20: genuinely unbound covers pass through.
 			$bindings = $attrs['metadata']['bindings'] ?? null;
-			if ( ! empty( $bindings ) && is_array( $bindings ) && ( isset( $bindings['__default'] ) || isset( $bindings['id'] ) || isset( $bindings['url'] ) ) ) {
+			if ( is_array( $bindings ) && ( isset( $bindings['__default'] ) || isset( $bindings['id'] ) || isset( $bindings['url'] ) ) ) {
 				return gutenberg_cover_bindings_strip_image( $block_content );
 			}
 			return $block_content;
 		}
 
-		$resolved_url = $attrs['url'] ?? null;
-		$resolved_id  = (int) ( $attrs['id'] ?? 0 );
-
-		if ( empty( $resolved_url ) || empty( $resolved_id ) ) {
+		$url = $attrs['url'] ?? null;
+		$id  = (int) ( $attrs['id'] ?? 0 );
+		if ( empty( $url ) || empty( $id ) ) {
 			return gutenberg_cover_bindings_strip_image( $block_content );
 		}
 
-		$attachment = get_post( $resolved_id );
+		$attachment = get_post( $id );
 		if ( ! $attachment || 'attachment' !== $attachment->post_type ) {
 			return gutenberg_cover_bindings_strip_image( $block_content );
 		}
 
-		$block_content = gutenberg_cover_bindings_rewrite_image(
-			$block_content,
-			(string) $resolved_url,
-			$resolved_id,
-			$attrs
-		);
+		$block_content = gutenberg_cover_bindings_rewrite_image( $block_content, (string) $url, $id, $attrs );
 
-		// AC-16 / OQ-4: relax stored dimRatio:100 so the bound image is visible
-		// (effective dimRatio is 50 and `dimRatioToClass(50)` is null).
+		// AC-16 / OQ-4: relax stored dimRatio:100 so the bound image is visible.
 		if ( 100 === (int) ( $attrs['dimRatio'] ?? 100 ) ) {
 			$processor = new WP_HTML_Tag_Processor( $block_content );
 			while ( $processor->next_tag(
@@ -290,6 +271,5 @@ if ( ! function_exists( 'gutenberg_cover_bindings_render_block' ) ) {
 	}
 }
 
-// Priority 9 — must run before the generic priority-10
-// gutenberg_block_bindings_render_block filter.
+// Priority 9 — must run before the generic priority-10 filter.
 add_filter( 'render_block', 'gutenberg_cover_bindings_render_block', 9, 3 );
